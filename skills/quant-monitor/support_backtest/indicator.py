@@ -3,7 +3,7 @@ Technical indicators: MA, BOLL, ATR, RSI, volume MA,
 lower shadow ratio, and Japanese candlestick pattern detection.
 """
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 import pandas as pd
 import numpy as np
@@ -114,12 +114,19 @@ class IndicatorCalculator:
             (o <= prev_c) & (c >= prev_o)  # engulfs
         )
 
+        # Bearish engulfing
+        df["pat_bearish_engulf"] = (
+            (prev_c > prev_o) &           # prior bull candle
+            (c < o) &                      # current bear candle
+            (c <= prev_o) & (o >= prev_c)  # engulfs
+        )
+
         # Morning star: 3-candle pattern
         df["pat_morning_star"] = (
             (prev_c.shift(1) < prev_o.shift(1)) &     # day-2: bear
             (body.shift(1) < body.shift(2) * 0.5) &    # day-1: small body
             (c > o) &                                   # today: bull
-            (c > (prev_c.shift(2) + prev_o.shift(2)) / 2)  # closes above midpoint of day-2
+            (c > (prev_c.shift(1) + prev_o.shift(1)) / 2)  # closes above midpoint of day-2
         )
 
         # Piercing line
