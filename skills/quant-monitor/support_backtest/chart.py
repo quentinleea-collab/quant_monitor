@@ -44,7 +44,7 @@ class ChartGenerator:
         code = self.cfg.symbol
         paths = []
 
-        paths.append(self._chart_support_map(df, supports_df, out_dir, code, ts))
+        paths.append(self._chart_support_map(stats, df, supports_df, out_dir, code, ts))
         paths.append(self._chart_ranking(stats, out_dir, code, ts))
         paths.append(self._chart_heatmap(stats, out_dir, code, ts))
         paths.append(self._chart_pie(stats, out_dir, code, ts))
@@ -53,7 +53,7 @@ class ChartGenerator:
         logger.info(f"{len(paths)} charts saved to {out_dir}")
         return paths
 
-    def _chart_support_map(self, df, supports_df, out_dir, code, ts):
+    def _chart_support_map(self, stats, df, supports_df, out_dir, code, ts):
         """K-line chart with key support lines overlaid."""
         fig, ax = plt.subplots(figsize=(16, 8))
 
@@ -73,7 +73,7 @@ class ChartGenerator:
                color=colors, width=0.6, linewidth=0.5)
 
         # Overlay top 5 supports (if they exist in the plot range)
-        type_rank = stats.get("type_ranking", pd.DataFrame())
+        type_rank = stats.get("type_ranking", pd.DataFrame()) if isinstance(stats, dict) else pd.DataFrame()
         if not type_rank.empty:
             top5_types = type_rank.head(5)["support_type"].tolist()
             plot_supports = supports_df[

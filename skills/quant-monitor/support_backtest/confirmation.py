@@ -134,7 +134,8 @@ class ConfirmationAnalyzer:
 
         for date, grp in df.groupby("date"):
             prices = grp["support_price"].values
-            types = grp["support_type"].unique()
+            types_all = grp["support_type"].values  # per-row, length = len(prices)
+            types_unique = grp["support_type"].unique()
             n = len(prices)
 
             # Count how many support types have prices within 1% of each other
@@ -151,14 +152,14 @@ class ConfirmationAnalyzer:
                         continue
                     if abs(prices[i] - prices[j]) / prices[i] < self.cfg.resonance_price_pct:
                         # Check if different support types
-                        if types[i] != types[j]:
+                        if types_all[i] != types_all[j]:
                             group.append(j)
                             used.add(j)
-                if len(set(types[g] for g in group)) >= 2:
+                if len(set(types_all[g] for g in group)) >= 2:
                     convergent_groups += 1
                 used.add(i)
 
             # Count total unique support types on this day
-            resonance[date] = len(types)
+            resonance[date] = len(types_unique)
 
         return resonance
