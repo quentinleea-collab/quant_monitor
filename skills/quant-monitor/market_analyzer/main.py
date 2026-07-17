@@ -9,9 +9,13 @@ Usage:
   python main.py scan               # Daily scan (requires trained models)
   python main.py train --symbol 588170  # Train single symbol
 """
-import sys, os, logging, argparse
+import sys, os, logging, argparse, io
 import pandas as pd
 from datetime import datetime
+
+# Fix Unicode output on Windows console
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -98,17 +102,28 @@ def cmd_scan(args):
     results = scanner.scan(symbols)
 
     print()
-    print("=" * 72)
-    print(f"  市场底部扫描 — {datetime.now().strftime('%Y-%m-%d')}")
-    print("=" * 72)
-    print(f"  {'标的':<12} {'底部概率':<10} {'趋势状态':<20} {'建议':<15}")
-    print("-" * 72)
-
+    print("=" * 80)
+    print(f"  市场底部扫描 (中期反弹概率) — {datetime.now().strftime('%Y-%m-%d')}")
+    print("=" * 80)
     for _, row in results.iterrows():
-        prob_str = f"{row['bottom_prob']:.0f}%" if row['bottom_prob'] is not None else "N/A"
-        print(f"  {row['name']:<12} {prob_str:<10} {row['trend_state']:<20} {row['recommendation']:<15}")
+        prob = row['bottom_prob']
+        prob_str = f"{prob:.0f}%" if prob is not None else "N/A"
+        name = str(row['name'])
+        trend = str(row['trend_state'])
+        rec = str(row['recommendation'])
+        sl = str(row.get('stop_loss', 'N/A'))
+        dd = str(row.get('hist_max_dd', 'N/A'))
+        print(f"  {name}")
+        print(f"    中期反弹概率: {prob_str}   趋势: {trend}")
+        print(f"    建议: {rec}              止损位: {sl}")
+        print(f"    相似市况下历史最大跌幅: {dd}")
+        print()
 
-    print("=" * 72)
+    print("=" * 80)
+    print("  中期反弹概率 = XGBoost预测未来10个交易日最高涨幅>=3%的概率")
+    print("  历史最大跌幅  = 历史上MA60偏离度相近时, 未来20天最大进一步跌幅")
+    print("  止损位       = min(20日低点, MA60) × 0.98")
+    print("=" * 80)
     print()
 
 

@@ -111,9 +111,13 @@ class DailyScanner:
         start_date = '20000101'
 
         # ── 1. Build features ──────────────────────────────────────────────
-        features = self.engineer.build_features(symbol, start_date, end_date)
-        if features.empty:
+        data = self.engineer.build_features(symbol, start_date, end_date)
+        if data.empty:
             raise RuntimeError(f"No features generated for {symbol}")
+
+        # Remove close to prevent data leakage (model was trained without it)
+        close = data["close"] if "close" in data.columns else None
+        features = data.drop(columns=["close"]) if "close" in data.columns else data
 
         # ── 2. Load or auto-train model ────────────────────────────────────
         try:
@@ -123,6 +127,7 @@ class DailyScanner:
             self._auto_train(symbol, features, start_date, end_date)
 
         # ── 3. Predict latest bar ──────────────────────────────────────────
+        # (close is already extracted from data before features was built)
         try:
             proba = self.trainer.predict_proba(features, symbol)
         except KeyError:
@@ -130,7 +135,12 @@ class DailyScanner:
 
         latest_prob = float(proba[-1]) * 100.0  # 0-100 scale
 
-        # ── 4. Format result ──────────────────────────────────────────────
+        # ── 4. Compute risk metrics ─────────────────────────────────────────
+        close_series = close if close is not None else None
+        stop_loss = self._calc_stop_loss(features, close_series)
+        hist_dd = self._calc_historical_drawdown(features, close_series)
+
+        # ── 5. Format result ──────────────────────────────────────────────
         last_date = str(features.index[-1])[:10]
         trend_state = self._classify_trend(features, latest_prob)
         recommendation = self._get_recommendation(latest_prob)
@@ -139,9 +149,11 @@ class DailyScanner:
             'symbol': symbol,
             'name': self.cfg.symbol_names.get(symbol, symbol),
             'date': last_date,
-            'bottom_prob': round(latest_prob, 1),
+            'bottom_prob': round(latest_prob, 1),     # 中期反弹概率
             'trend_state': trend_state,
             'recommendation': recommendation,
+            'stop_loss': stop_loss,
+            'hist_max_dd': hist_dd,
         }
 
     def _auto_train(self, symbol: str, features: pd.DataFrame,
@@ -175,6 +187,10 @@ class DailyScanner:
         X_train = features.loc[common_idx]
         y_train = labels.loc[common_idx].dropna()
         X_train = X_train.loc[y_train.index]
+
+        # Drop close to prevent data leakage
+        if "close" in X_train.columns:
+            X_train = X_train.drop(columns=["close"])
 
         if len(X_train) < 10:
             raise RuntimeError(
@@ -228,3 +244,64 @@ class DailyScanner:
             return '观察(暂不建仓)'
         else:
             return '继续等待'
+
+    @staticmethod
+    def _calc_stop_loss(features: pd.DataFrame, close: pd.Series = None) -> str:
+        """
+        Calculate recommended stop-loss level.
+        Uses: recent 20-day low, MA60, or 2x ATR below current price.
+        """
+        if close is None:
+            return "N/A"
+        try:
+            current_price = float(close.iloc[-1])
+            recent_low = float(close.iloc[-20:].min()) if len(close) >= 20 else current_price * 0.95
+            # Use MA60 if available
+            if 'ma60_dev' in features.columns:
+                ma60_dev = float(features['ma60_dev'].iloc[-1])
+                ma60 = current_price / (1 + ma60_dev / 100) if ma60_dev != -100 else recent_low
+            else:
+                ma60 = recent_low
+            # Stop loss: 2% below the stronger support level
+            stop_price = min(recent_low, ma60) * 0.98
+            return f"{stop_price:.1f} (MA60:{ma60:.1f}, 前低:{recent_low:.1f})"
+        except Exception:
+            return "N/A"
+
+    @staticmethod
+    def _calc_historical_drawdown(features: pd.DataFrame, close: pd.Series = None) -> str:
+        """
+        Historical max further drawdown for similar MA60 deviation patterns.
+        Searches history for days with similar MA60偏离度, computes max further drop.
+        """
+        if close is None or 'ma60_dev' not in features.columns:
+            return "N/A"
+        try:
+            current_dev = float(features['ma60_dev'].iloc[-1])
+            # Find similar patterns (MA60 dev within 5% of current), exclude last 20 days
+            similar_mask = (abs(features['ma60_dev'] - current_dev) < 5)
+            # Only consider days with 20+ future bars available
+            max_dds = []
+            n = len(close)
+            for i in range(n - 20):
+                if similar_mask.iloc[i]:
+                    entry_price = float(close.iloc[i])
+                    future_low = float(close.iloc[i+1:i+21].min())
+                    dd = (future_low - entry_price) / entry_price * 100
+                    max_dds.append(dd)
+            if len(max_dds) < 3:
+                # Try wider tolerance
+                similar_mask2 = (abs(features['ma60_dev'] - current_dev) < 10)
+                for i in range(n - 20):
+                    if similar_mask2.iloc[i]:
+                        entry_price = float(close.iloc[i])
+                        future_low = float(close.iloc[i+1:i+21].min())
+                        dd = (future_low - entry_price) / entry_price * 100
+                        max_dds.append(dd)
+            if len(max_dds) < 3:
+                return f"样本不足(仅{len(max_dds)}个)"
+            avg_dd = sum(max_dds) / len(max_dds)
+            worst_dd = min(max_dds)
+            return f"均值{avg_dd:+.1f}% 最差{worst_dd:+.1f}%"
+        except Exception as e:
+            return f"计算失败:{e}"
