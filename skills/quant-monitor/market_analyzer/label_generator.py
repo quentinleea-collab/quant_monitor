@@ -5,7 +5,7 @@ Label = 1 if future N-day max return >= threshold (i.e., a bottom was formed).
 import pandas as pd
 import numpy as np
 from typing import Optional
-from config import config as default_config, MarketAnalyzerConfig
+from ma_config import config as default_config, MarketAnalyzerConfig
 
 
 class LabelGenerator:

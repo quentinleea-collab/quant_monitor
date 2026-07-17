@@ -9,7 +9,7 @@ import xgboost as xgb
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from typing import Optional, Tuple
-from config import config as default_config, MarketAnalyzerConfig
+from ma_config import config as default_config, MarketAnalyzerConfig
 
 logger = logging.getLogger(__name__)
 

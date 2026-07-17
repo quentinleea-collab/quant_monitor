@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from itertools import combinations
 from typing import Optional
-from config import config as default_config, MarketAnalyzerConfig
+from ma_config import config as default_config, MarketAnalyzerConfig
 
 logger = logging.getLogger(__name__)
 
