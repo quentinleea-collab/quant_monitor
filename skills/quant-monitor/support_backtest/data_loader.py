@@ -1,17 +1,11 @@
 """
-Data loader with proxy bypass for akshare.
+Data loader using system proxy for akshare.
 Supports daily K-line and minute-level K-line (60min).
 Weekly/monthly resampled from daily; 120min resampled from 60min.
 """
 import os
 import logging
 from typing import Optional
-
-# ═══ CRITICAL: clear proxy BEFORE akshare import ═══
-for _key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-    os.environ.pop(_key, None)
-os.environ["no_proxy"] = "*"
-# ══════════════════════════════════════════════════════
 
 import pandas as pd
 import akshare as ak
