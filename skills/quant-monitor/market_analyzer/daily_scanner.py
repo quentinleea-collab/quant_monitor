@@ -100,14 +100,7 @@ class DailyScanner:
     # ── per-symbol logic ──────────────────────────────────────────────────
 
     def _scan_one(self, symbol: str, end_date: str) -> dict:
-        """Scan a single symbol and return its bottom probability dict.
-
-        Steps:
-            1. Build feature matrix from full history.
-            2. Load or train an XGBoost model.
-            3. Predict bottom probability for the latest bar.
-            4. Classify trend state and generate a recommendation.
-        """
+        """Scan a single symbol with multi-outcome prediction + SHAP contributions."""
         start_date = '20000101'
 
         # ── 1. Build features ──────────────────────────────────────────────
@@ -115,45 +108,57 @@ class DailyScanner:
         if data.empty:
             raise RuntimeError(f"No features generated for {symbol}")
 
-        # Remove close to prevent data leakage (model was trained without it)
         close = data["close"] if "close" in data.columns else None
         features = data.drop(columns=["close"]) if "close" in data.columns else data
 
-        # ── 2. Load or auto-train model ────────────────────────────────────
-        try:
-            self.trainer.load(symbol)
-        except FileNotFoundError:
-            logger.info("No saved model for %s — training on the fly", symbol)
-            self._auto_train(symbol, features, start_date, end_date)
+        # ── 2. Load models (auto-train if missing) ─────────────────────────
+        label_types = ['rebound_3pct', 'tp_win', 'sl_loss', 'final_profit']
+        for lt in label_types:
+            try:
+                self.trainer.load(symbol, lt)
+            except FileNotFoundError:
+                logger.info(f"No {lt} model for {symbol} — training on the fly")
+                self._auto_train_multi(symbol, features, start_date, end_date, label_types)
+                break
 
-        # ── 3. Predict latest bar ──────────────────────────────────────────
-        # (close is already extracted from data before features was built)
-        try:
-            proba = self.trainer.predict_proba(features, symbol)
-        except KeyError:
-            raise RuntimeError(f"Model for {symbol} failed to load")
+        # ── 3. Multi-outcome predictions ───────────────────────────────────
+        probs = {}
+        latest_features = features.iloc[-1:].copy()
+        for lt in label_types:
+            try:
+                p = self.trainer.predict_proba(features, symbol, lt)
+                probs[lt] = float(p[-1]) * 100
+            except KeyError:
+                probs[lt] = None
 
-        latest_prob = float(proba[-1]) * 100.0  # 0-100 scale
+        # ── 4. SHAP per-signal contributions ───────────────────────────────
+        shap_contribs = self._get_shap_contribs(features, symbol)
 
-        # ── 4. Compute risk metrics ─────────────────────────────────────────
+        # ── 5. Risk metrics ────────────────────────────────────────────────
         close_series = close if close is not None else None
         stop_loss = self._calc_stop_loss(features, close_series)
         hist_dd = self._calc_historical_drawdown(features, close_series)
 
-        # ── 5. Format result ──────────────────────────────────────────────
+        # ── 6. Format result ──────────────────────────────────────────────
+        rebound_pct = probs.get('rebound_3pct', 0) or 0
         last_date = str(features.index[-1])[:10]
-        trend_state = self._classify_trend(features, latest_prob)
-        recommendation = self._get_recommendation(latest_prob)
 
         return {
             'symbol': symbol,
             'name': self.cfg.symbol_names.get(symbol, symbol),
             'date': last_date,
-            'bottom_prob': round(latest_prob, 1),     # 中期反弹概率
-            'trend_state': trend_state,
-            'recommendation': recommendation,
+            # Core probabilities
+            'bottom_prob': round(rebound_pct, 1),         # 反弹>=3%概率
+            'tp_win_prob': round(probs.get('tp_win') or 0, 1),   # 先触+5%概率
+            'sl_loss_prob': round(probs.get('sl_loss') or 0, 1), # 先触-3%概率
+            'final_profit_prob': round(probs.get('final_profit') or 0, 1), # 最终盈利概率
+            # Risk
+            'trend_state': self._classify_trend(features, rebound_pct),
+            'recommendation': self._get_recommendation(rebound_pct),
             'stop_loss': stop_loss,
             'hist_max_dd': hist_dd,
+            # SHAP signal contributions
+            'shap_signals': shap_contribs,
         }
 
     def _auto_train(self, symbol: str, features: pd.DataFrame,
@@ -267,6 +272,49 @@ class DailyScanner:
             return f"{stop_price:.1f} (MA60:{ma60:.1f}, 前低:{recent_low:.1f})"
         except Exception:
             return "N/A"
+
+    def _auto_train_multi(self, symbol: str, features: pd.DataFrame,
+                           start_date: str, end_date: str,
+                           label_types: list[str]) -> None:
+        """Train multi-label models on the fly."""
+        from data_loader import DataLoader
+        loader = DataLoader()
+        daily = loader.fetch_daily(symbol, start_date, end_date)
+        daily["date"] = pd.to_datetime(daily["date"])
+        daily = daily.sort_values("date").reset_index(drop=True).set_index("date")
+
+        label_gen = LabelGenerator(self.cfg)
+        labels = label_gen.generate_all(daily)
+
+        common_idx = features.index.intersection(labels.index)
+        X = features.loc[common_idx]
+        if "close" in X.columns:
+            X = X.drop(columns=["close"])
+
+        for lt in label_types:
+            y = labels[lt].loc[common_idx].dropna()
+            Xt = X.loc[y.index]
+            if len(Xt) >= 10:
+                self.trainer.train(Xt, y, symbol, lt)
+                self.trainer.save(symbol, lt)
+
+    def _get_shap_contribs(self, features: pd.DataFrame, symbol: str) -> list[dict]:
+        """Get SHAP per-signal contribution for the latest bar only."""
+        try:
+            import shap
+            model = self.trainer.models.get(f"{symbol}_rebound_3pct")
+            if model is None:
+                return []
+            explainer = shap.TreeExplainer(model)
+            shap_vals = explainer.shap_values(features.iloc[-1:])
+            # Pair (feature, shap_value) sorted by abs value
+            pairs = [(features.columns[i], float(shap_vals[0][i]))
+                     for i in range(len(features.columns))]
+            pairs.sort(key=lambda x: abs(x[1]), reverse=True)
+            return [{'feature': f, 'contribution': round(v, 4)} for f, v in pairs[:10]]
+        except Exception as e:
+            logger.warning(f"SHAP contrib failed: {e}")
+            return []
 
     @staticmethod
     def _calc_historical_drawdown(features: pd.DataFrame, close: pd.Series = None) -> str:

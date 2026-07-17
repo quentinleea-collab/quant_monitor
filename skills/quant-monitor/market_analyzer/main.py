@@ -34,95 +34,144 @@ def setup_logging(verbose=False):
 
 
 def cmd_train(args):
-    """Train XGBoost models for specified symbols."""
+    """Train multi-label XGBoost models for all symbols."""
     symbols = args.symbols or cfg.symbols
     engineer = FeatureEngineer(cfg)
     labeler = LabelGenerator(cfg)
     trainer = ModelTrainer(cfg)
-    shap_analyzer = SHAPAnalyzer()
 
     for symbol in symbols:
         print(f"\n{'='*60}")
-        print(f"  Training: {cfg.symbol_names.get(symbol, symbol)} ({symbol})")
+        print(f"  {cfg.symbol_names.get(symbol, symbol)} ({symbol})")
         print(f"{'='*60}")
 
-        # 1. Build features
-        print(f"[1/5] Building features...")
+        # Build features
         data = engineer.build_features(symbol, cfg.start_date, cfg.end_date)
         close = data["close"]
         features = data.drop(columns=["close"])
-        print(f"      {len(features)} samples, {features.shape[1]} features")
+        print(f"  Features: {len(features)} samples x {features.shape[1]} dims")
 
-        # 2. Generate labels (needs close prices)
-        print(f"[2/5] Generating labels (horizon={cfg.label_horizon}d, threshold={cfg.label_threshold:.0%})...")
-        labels = labeler.generate(pd.DataFrame({"close": close}))
-        stats = labeler.get_label_stats(labels)
-        print(f"      Positive: {stats['positive']} ({stats['positive_rate']:.1%}), Negative: {stats['negative']}")
+        # Generate multi-labels
+        labels_df = labeler.generate_all(pd.DataFrame({"close": close}))
+        stats = labeler.get_label_stats(labels_df)
+        for col, s in stats.items():
+            print(f"  {col}: {s['positive_rate']}% positive ({s['positive']}/{s['total']})")
 
-        # 3. Train model (without close to prevent leakage)
-        print(f"[3/5] Training XGBoost...")
-        model = trainer.train(features, labels, symbol)
-        eval_results = trainer.evaluate(model, features, labels)
-        print(f"      Accuracy: {eval_results['overall']['accuracy']:.3f}, F1: {eval_results['overall']['f1']:.3f}")
-        for t in cfg.score_thresholds:
-            key = f'thresh_{t}'
-            if key in eval_results:
-                r = eval_results[key]
-                print(f"      Threshold {t}: {r['signals']} signals, win_rate={r['win_rate']:.1%}")
+        # Train all models
+        for lt in ['rebound_3pct', 'tp_win', 'sl_loss', 'final_profit']:
+            y = labels_df[lt]
+            m = trainer.train(features, y, symbol, lt)
+            trainer.save(symbol, lt)
+            ev = trainer.evaluate(m, features, y)
+            print(f"  {lt}: acc={ev['overall']['accuracy']} f1={ev['overall']['f1']} "
+                  f"thresh80={ev.get('thresh_80',{}).get('win_rate','N/A')}")
 
-        # 4. SHAP analysis
-        print(f"[4/5] Computing SHAP...")
-        valid = labels.notna()
-        shap_result = shap_analyzer.analyze(model, features[valid].iloc[-500:])  # last 500 for speed
-        print(f"      Top 5 features:")
-        for f in shap_result['feature_importance'][:5]:
-            print(f"        {f['rank']}. {f['feature']}: {f['importance_pct']}%")
+    print(f"\n  Models saved to {cfg.model_dir}/")
 
-        # 5. Pattern mining
-        print(f"[5/5] Mining patterns...")
-        miner = PatternMiner(cfg)
-        patterns = miner.mine(features[valid], labels[valid])
-        print(f"      Top 3 patterns:")
-        for p in patterns[:3]:
-            names = ', '.join(p['features'][:3])
-            print(f"        [{names}]: win={p['win_rate']:.1%}, n={p['sample_count']}")
 
-        # Save
-        trainer.save(symbol)
+def cmd_backtest(args):
+    """Run trading simulator on historical predictions."""
+    from trading_simulator import TradingSimulator
+    import numpy as np
 
-    print(f"\n{'='*60}")
-    print(f"  All models trained and saved to {cfg.model_dir}/")
-    print(f"{'='*60}")
+    symbols = args.symbols or cfg.symbols
+    engineer = FeatureEngineer(cfg)
+    trainer = ModelTrainer(cfg)
+
+    for symbol in symbols:
+        print(f"\n{'='*60}")
+        print(f"  Backtest: {cfg.symbol_names.get(symbol, symbol)} ({symbol})")
+        print(f"{'='*60}")
+
+        data = engineer.build_features(symbol, cfg.start_date, cfg.end_date)
+        close = data["close"]
+        features = data.drop(columns=["close"])
+
+        # Load model and get predictions
+        try:
+            trainer.load(symbol, 'rebound_3pct')
+        except FileNotFoundError:
+            logger.warning("No model — run 'train' first")
+            continue
+
+        proba = trainer.predict_proba(features, symbol, 'rebound_3pct') * 100
+
+        sim = TradingSimulator(
+            capital=args.capital, position_pct=args.position / 100,
+            stop_loss=-args.stop_loss / 100, take_profit=args.take_profit / 100,
+        )
+        result = sim.run(close, pd.Series(proba, index=features.index), entry_threshold=args.entry_threshold)
+
+        print(f"  总交易: {result['total_trades']}次")
+        print(f"  胜率: {result['win_rate']}%")
+        print(f"  年化收益: {result['annual_return']}%")
+        print(f"  最大回撤: {result['max_drawdown']}%")
+        print(f"  最大连续亏损: {result['consecutive_losses']}次")
+        print(f"  总收益: {result['total_return']}%")
+        print(f"  Sharpe: {result['sharpe_ratio']}")
+
+        # Equity curve chart
+        equity = result['equity_curve']
+        if len(equity) > 0 and not args.no_charts:
+            import matplotlib; matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.plot(equity, color='steelblue')
+            ax.axhline(y=args.capital, color='gray', linestyle='--', alpha=0.5)
+            ax.set_title(f"{cfg.symbol_names.get(symbol, symbol)} Equity Curve")
+            ax.set_ylabel("Account Value")
+            path = f"{cfg.output_dir}/{symbol}_equity_{datetime.now().strftime('%Y%m%d')}.png"
+            fig.savefig(path, dpi=150, bbox_inches='tight')
+            plt.close(fig)
+            print(f"  资金曲线: {path}")
 
 
 def cmd_scan(args):
-    """Scan all symbols for bottom probability."""
+    """Scan all symbols for bottom probability with multi-outcome analysis."""
     scanner = DailyScanner(cfg)
     symbols = args.symbols or cfg.symbols
     results = scanner.scan(symbols)
 
     print()
     print("=" * 80)
-    print(f"  市场底部扫描 (中期反弹概率) — {datetime.now().strftime('%Y-%m-%d')}")
+    print(f"  市场底部扫描 — {datetime.now().strftime('%Y-%m-%d')}")
     print("=" * 80)
+
     for _, row in results.iterrows():
-        prob = row['bottom_prob']
-        prob_str = f"{prob:.0f}%" if prob is not None else "N/A"
         name = str(row['name'])
-        trend = str(row['trend_state'])
-        rec = str(row['recommendation'])
-        sl = str(row.get('stop_loss', 'N/A'))
-        dd = str(row.get('hist_max_dd', 'N/A'))
+        rebound = row['bottom_prob']
+        tp_win = row.get('tp_win_prob')
+        sl_loss = row.get('sl_loss_prob')
+        final_p = row.get('final_profit_prob')
+        shap = row.get('shap_signals', [])
+
         print(f"  {name}")
-        print(f"    中期反弹概率: {prob_str}   趋势: {trend}")
-        print(f"    建议: {rec}              止损位: {sl}")
-        print(f"    相似市况下历史最大跌幅: {dd}")
+        print(f"    反弹>=3%概率: {rebound:.0f}%  |  先达+5%概率: {tp_win:.0f}%  |  先触-3%概率: {sl_loss:.0f}%  |  最终盈利概率: {final_p:.0f}%")
+        print(f"    趋势: {row['trend_state']}  |  建议: {row['recommendation']}")
+        print(f"    止损位: {row.get('stop_loss', 'N/A')}")
+        print(f"    历史最差进一步跌幅: {row.get('hist_max_dd', 'N/A')}")
+
+        # SHAP per-signal contributions
+        if shap and len(shap) > 0:
+            print(f"    当前信号贡献:")
+            total_pos = sum(s['contribution'] for s in shap if s['contribution'] > 0)
+            total_neg = sum(abs(s['contribution']) for s in shap if s['contribution'] < 0)
+            # Show top 5 positive and top 3 negative
+            positives = [s for s in shap if s['contribution'] > 0][:5]
+            negatives = [s for s in shap if s['contribution'] < 0][:3]
+            for s in positives:
+                pct = s['contribution'] / total_pos * 100 if total_pos > 0 else 0
+                print(f"      +{s['feature']}: +{pct:.0f}%")
+            for s in negatives:
+                pct = abs(s['contribution']) / total_neg * 100 if total_neg > 0 else 0
+                print(f"      -{s['feature']}: -{pct:.0f}%")
         print()
 
     print("=" * 80)
-    print("  中期反弹概率 = XGBoost预测未来10个交易日最高涨幅>=3%的概率")
-    print("  历史最大跌幅  = 历史上MA60偏离度相近时, 未来20天最大进一步跌幅")
-    print("  止损位       = min(20日低点, MA60) × 0.98")
+    print("  反弹>=3%概率 = XGBoost预测未来10天最高涨幅>=3%的统计概率")
+    print("  先达+5%概率  = 未来20天内先触及+5%止盈(而非-3%止损)的概率")
+    print("  先触-3%概率  = 未来20天内先触及-3%止损(而非+5%止盈)的概率")
+    print("  信号贡献     = SHAP值: 每个信号对今日预测的正/负影响")
     print("=" * 80)
     print()
 
@@ -151,6 +200,16 @@ def main():
     r.add_argument("--symbols", nargs="*", default=None)
     r.add_argument("--verbose", "-v", action="store_true")
 
+    b = sub.add_parser("backtest", help="Run trading simulator")
+    b.add_argument("--symbols", nargs="*", default=None)
+    b.add_argument("--capital", type=float, default=60000, help="Initial capital")
+    b.add_argument("--position", type=float, default=20, help="Position size pct")
+    b.add_argument("--stop_loss", type=float, default=3, help="Stop loss pct")
+    b.add_argument("--take_profit", type=float, default=5, help="Take profit pct")
+    b.add_argument("--entry_threshold", type=float, default=70, help="Entry threshold")
+    b.add_argument("--no-charts", action="store_true")
+    b.add_argument("--verbose", "-v", action="store_true")
+
     args = p.parse_args()
 
     if not args.command:
@@ -159,13 +218,12 @@ def main():
 
     setup_logging(getattr(args, 'verbose', False))
 
-    # Apply CLI date overrides
     if hasattr(args, 'start') and args.start:
         cfg.start_date = args.start
     if hasattr(args, 'end') and args.end:
         cfg.end_date = args.end
 
-    {"train": cmd_train, "scan": cmd_scan, "report": cmd_report}[args.command](args)
+    {"train": cmd_train, "scan": cmd_scan, "report": cmd_report, "backtest": cmd_backtest}[args.command](args)
 
 
 if __name__ == "__main__":
