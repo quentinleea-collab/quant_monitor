@@ -253,23 +253,50 @@ class DailyScanner:
     @staticmethod
     def _calc_stop_loss(features: pd.DataFrame, close: pd.Series = None) -> str:
         """
-        Calculate recommended stop-loss level.
-        Uses: recent 20-day low, MA60, or 2x ATR below current price.
+        Calculate stop-loss based on structural support levels.
+        Finds: 20d low, nearest swing low, MA60 — uses the STRONGEST (lowest nearby).
         """
-        if close is None:
+        if close is None or len(close) < 20:
             return "N/A"
         try:
             current_price = float(close.iloc[-1])
-            recent_low = float(close.iloc[-20:].min()) if len(close) >= 20 else current_price * 0.95
-            # Use MA60 if available
+            values = close.values if hasattr(close, 'values') else np.array(close)
+
+            # 1. 20-day low
+            low_20d = float(np.min(values[-20:]))
+
+            # 2. Structural swing lows (local minima in 30-bar windows)
+            swing_lows = []
+            for i in range(15, len(values) - 5):
+                left = values[i-15:i]
+                right = values[i+1:i+6]
+                if values[i] <= np.min(left) and values[i] <= np.min(right):
+                    swing_lows.append(values[i])
+
+            # Nearest swing low BELOW current price
+            nearest_swing = None
+            for sl in sorted(swing_lows, reverse=True):
+                if sl < current_price * 0.98:  # at least 2% below (not trivial)
+                    nearest_swing = sl
+                    break
+
+            # 3. MA60
             if 'ma60_dev' in features.columns:
                 ma60_dev = float(features['ma60_dev'].iloc[-1])
-                ma60 = current_price / (1 + ma60_dev / 100) if ma60_dev != -100 else recent_low
+                ma60 = current_price / (1 + ma60_dev / 100) if ma60_dev != -100 else low_20d
             else:
-                ma60 = recent_low
-            # Stop loss: 2% below the stronger support level
-            stop_price = min(recent_low, ma60) * 0.98
-            return f"{stop_price:.1f} (MA60:{ma60:.1f}, 前低:{recent_low:.1f})"
+                ma60 = low_20d
+
+            # Stop-loss: take the strongest support (most recent structural low first, then MA60)
+            supports = [s for s in [nearest_swing, low_20d, ma60] if s is not None and s < current_price * 0.99]
+            if not supports:
+                return f"{low_20d*0.98:.1f} (20日低:{low_20d:.1f})"
+
+            strongest = min(supports)  # lowest = strongest support
+            stop_price = strongest * 0.98
+
+            sl_label = f"结构前低:{nearest_swing:.1f}" if nearest_swing else f"20日低:{low_20d:.1f}"
+            return f"{stop_price:.1f} ({sl_label}, MA60:{ma60:.1f})"
         except Exception:
             return "N/A"
 
