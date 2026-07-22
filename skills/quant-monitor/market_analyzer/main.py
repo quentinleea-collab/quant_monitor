@@ -156,7 +156,6 @@ def cmd_scan(args):
             print(f"    当前信号贡献:")
             total_pos = sum(s['contribution'] for s in shap if s['contribution'] > 0)
             total_neg = sum(abs(s['contribution']) for s in shap if s['contribution'] < 0)
-            # Show top 5 positive and top 3 negative
             positives = [s for s in shap if s['contribution'] > 0][:5]
             negatives = [s for s in shap if s['contribution'] < 0][:3]
             for s in positives:
@@ -165,6 +164,15 @@ def cmd_scan(args):
             for s in negatives:
                 pct = abs(s['contribution']) / total_neg * 100 if total_neg > 0 else 0
                 print(f"      -{s['feature']}: -{pct:.0f}%")
+
+        # Historical similarity (top 3)
+        sims = row.get('similar_periods', [])
+        if sims and len(sims) >= 3:
+            print(f"    历史相似形态 (Top 3):")
+            for s in sims[:3]:
+                sim_pct = s['similarity']
+                fwd = f"3日:{s['fwd_3d']:+.1f}%  5日:{s['fwd_5d']:+.1f}%  10日:{s['fwd_10d']:+.1f}%" if s['fwd_3d'] is not None else "N/A"
+                print(f"      {s['start_date']}~{s['end_date']}  相似度:{sim_pct:.0f}%  →  {fwd}")
         print()
 
     print("=" * 80)

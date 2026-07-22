@@ -139,7 +139,12 @@ class DailyScanner:
         stop_loss = self._calc_stop_loss(features, close_series)
         hist_dd = self._calc_historical_drawdown(features, close_series)
 
-        # ── 6. Format result ──────────────────────────────────────────────
+        # ── 6. Historical similarity ─────────────────────────────────────
+        from similarity import SimilarityAnalyzer
+        sim_analyzer = SimilarityAnalyzer(lookback_window=10, top_k=10)
+        similar_periods = sim_analyzer.find_similar(features, close)
+
+        # ── 7. Format result ──────────────────────────────────────────────
         rebound_pct = probs.get('rebound_3pct', 0) or 0
         last_date = str(features.index[-1])[:10]
 
@@ -148,10 +153,10 @@ class DailyScanner:
             'name': self.cfg.symbol_names.get(symbol, symbol),
             'date': last_date,
             # Core probabilities
-            'bottom_prob': round(rebound_pct, 1),         # 反弹>=3%概率
-            'tp_win_prob': round(probs.get('tp_win') or 0, 1),   # 先触+5%概率
-            'sl_loss_prob': round(probs.get('sl_loss') or 0, 1), # 先触-3%概率
-            'final_profit_prob': round(probs.get('final_profit') or 0, 1), # 最终盈利概率
+            'bottom_prob': round(rebound_pct, 1),
+            'tp_win_prob': round(probs.get('tp_win') or 0, 1),
+            'sl_loss_prob': round(probs.get('sl_loss') or 0, 1),
+            'final_profit_prob': round(probs.get('final_profit') or 0, 1),
             # Risk
             'trend_state': self._classify_trend(features, rebound_pct),
             'recommendation': self._get_recommendation(rebound_pct),
@@ -159,6 +164,8 @@ class DailyScanner:
             'hist_max_dd': hist_dd,
             # SHAP signal contributions
             'shap_signals': shap_contribs,
+            # Historical similarity
+            'similar_periods': similar_periods,
         }
 
     def _auto_train(self, symbol: str, features: pd.DataFrame,
