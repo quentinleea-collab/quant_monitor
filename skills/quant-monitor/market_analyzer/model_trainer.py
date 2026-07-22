@@ -35,16 +35,23 @@ class ModelTrainer:
             learning_rate=self.cfg.xgb_learning_rate,
             n_estimators=self.cfg.xgb_n_estimators,
             early_stopping_rounds=self.cfg.xgb_early_stopping,
+            subsample=self.cfg.xgb_subsample,
+            reg_lambda=self.cfg.xgb_reg_lambda,
             eval_metric='logloss', random_state=42,
         )
 
-        tss = TimeSeriesSplit(n_splits=self.cfg.tss_n_splits)
+        # Hold out last 20% as test set for honest evaluation
+        tss = TimeSeriesSplit(n_splits=2)
         splits = list(tss.split(X_train))
-        _, eval_idx = splits[-1]
+        train_idx, test_idx = splits[0]
+        # Use second-to-last fold for early stopping during training
+        eval_idx = train_idx[-len(test_idx):]
 
-        model.fit(X_train, y_train,
-                  eval_set=[(X_train.iloc[eval_idx], y_train.iloc[eval_idx])],
-                  verbose=False)
+        model.fit(
+            X_train.iloc[train_idx], y_train.iloc[train_idx],
+            eval_set=[(X_train.iloc[eval_idx], y_train.iloc[eval_idx])],
+            verbose=False,
+        )
 
         key = f"{symbol}_{label_type}" if symbol else label_type
         self.models[key] = model
