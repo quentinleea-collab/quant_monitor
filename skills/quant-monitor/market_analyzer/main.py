@@ -110,17 +110,37 @@ def cmd_backtest(args):
         print(f"  总收益: {result['total_return']}%")
         print(f"  Sharpe: {result['sharpe_ratio']}")
 
-        # Equity curve chart
+        # Equity curve chart with dates + trade markers
         equity = result['equity_curve']
         if len(equity) > 0 and not args.no_charts:
             import matplotlib; matplotlib.use('Agg')
             import matplotlib.pyplot as plt
             os.makedirs(cfg.output_dir, exist_ok=True)
-            fig, ax = plt.subplots(figsize=(12, 5))
-            ax.plot(equity, color='steelblue')
-            ax.axhline(y=args.capital, color='gray', linestyle='--', alpha=0.5)
-            ax.set_title(f"{symbol} Equity Curve")
-            ax.set_ylabel("Account Value")
+
+            # Use feature dates for x-axis
+            feat_idx = features.index[:len(equity)]
+
+            fig, ax = plt.subplots(figsize=(14, 6))
+            ax.plot(feat_idx, equity, color='steelblue', linewidth=1.5, label='Equity')
+            ax.axhline(y=args.capital, color='gray', linestyle='--', alpha=0.5, label='Initial')
+
+            # Mark entries (green ^) and exits (red v for loss, green v for win)
+            for t in result.get('trades', []):
+                ei = t.get('entry_date')
+                xi = t.get('exit_date')
+                if ei is not None and ei < len(feat_idx):
+                    ax.scatter(feat_idx[ei], equity[ei], color='blue', marker='^', s=80, zorder=5)
+                if xi is not None and xi < len(feat_idx):
+                    c = 'red' if t.get('pnl_pct', 0) < 0 else 'lime'
+                    ax.scatter(feat_idx[xi], equity[xi], color=c, marker='v', s=80, zorder=5)
+
+            ax.set_title(f"{symbol} ({result['total_trades']} trades, "
+                        f"{result['win_rate']}% win, {result['total_return']}% return)")
+            ax.set_ylabel("Value (CNY)")
+            ax.legend(loc='upper left')
+            ax.grid(alpha=0.3)
+            fig.autofmt_xdate()
+
             path = f"{cfg.output_dir}/{symbol}_equity_{datetime.now().strftime('%Y%m%d')}.png"
             fig.savefig(path, dpi=150, bbox_inches='tight')
             plt.close(fig)

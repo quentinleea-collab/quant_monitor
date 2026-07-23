@@ -49,8 +49,9 @@ class TradingSimulator:
         n = len(close)
 
         cash = self.capital
-        position = 0.0      # shares held
+        position = 0.0
         entry_price = 0.0
+        entry_idx = -1       # bar index when position was entered
         peak_since_entry = 0.0
         tp_hit = False
         trades = []
@@ -59,74 +60,59 @@ class TradingSimulator:
         for i in range(n):
             price = close[i]
 
-            # Update peak tracking
             if position > 0:
                 peak_since_entry = max(peak_since_entry, price)
 
-                # Check stop loss
+                # Stop loss
                 if price <= entry_price * (1 + self.stop_loss):
-                    exit_val = position * price
-                    pnl = exit_val - position * entry_price
                     pnl_pct = (price / entry_price - 1) * 100
                     trades.append({
-                        'entry_date': None, 'exit_date': i,
+                        'entry_date': entry_idx, 'exit_date': i,
                         'entry_price': entry_price, 'exit_price': price,
-                        'pnl': pnl, 'pnl_pct': pnl_pct,
-                        'exit_reason': 'stop_loss',
+                        'pnl': position * (price - entry_price),
+                        'pnl_pct': pnl_pct, 'exit_reason': 'stop_loss',
                     })
-                    cash += exit_val
-                    position = 0
-                    entry_price = 0
-                    peak_since_entry = 0
-                    tp_hit = False
+                    cash += position * price
+                    position = 0; entry_price = 0; entry_idx = -1
+                    peak_since_entry = 0; tp_hit = False
 
-                # Take profit
+                # Take profit (sell half at +5%)
                 elif not tp_hit and price >= entry_price * (1 + self.take_profit):
-                    # Sell half
                     half = position / 2
-                    exit_val = half * price
-                    pnl = exit_val - half * entry_price
-                    cash += exit_val
+                    cash += half * price
                     position -= half
                     tp_hit = True
-                    logger.debug(f"TP hit at bar {i}: sold half at {price:.2f}")
 
-                # Trail stop (after TP, sell remaining if drops 3% from peak)
+                # Trail stop (after TP, full exit if drops 3% from peak)
                 elif tp_hit and price <= peak_since_entry * (1 - self.trail_stop):
-                    exit_val = position * price
-                    pnl = exit_val - position * entry_price
                     pnl_pct = (price / entry_price - 1) * 100
                     trades.append({
-                        'entry_date': None, 'exit_date': i,
+                        'entry_date': entry_idx, 'exit_date': i,
                         'entry_price': entry_price, 'exit_price': price,
-                        'pnl': pnl, 'pnl_pct': pnl_pct,
-                        'exit_reason': 'trail_stop',
+                        'pnl': position * (price - entry_price),
+                        'pnl_pct': pnl_pct, 'exit_reason': 'trail_stop',
                     })
-                    cash += exit_val
-                    position = 0
-                    entry_price = 0
-                    peak_since_entry = 0
-                    tp_hit = False
+                    cash += position * price
+                    position = 0; entry_price = 0; entry_idx = -1
+                    peak_since_entry = 0; tp_hit = False
 
-            # Entry signal (only if no position)
+            # Entry signal
             if position == 0 and prob[i] >= entry_threshold:
                 position_size = cash * self.position_pct
                 entry_price = price
+                entry_idx = i
                 position = position_size / price
                 peak_since_entry = price
                 tp_hit = False
                 cash -= position_size
-                # Update trade record with entry date
-                if trades and trades[-1].get('entry_date') is None:
-                    trades[-1]['entry_date'] = i
-                    trades[-1]['entry_price'] = price
 
             equity[i] = cash + position * price
 
         # Compute metrics
-        return self._compute_metrics(trades, equity, close)
+        return self._compute_metrics(trades, equity, close, self.capital)
 
-    def _compute_metrics(self, trades: list, equity: np.ndarray, close: np.ndarray) -> dict:
+    def _compute_metrics(self, trades: list, equity: np.ndarray, close: np.ndarray,
+                          capital: float = 60000) -> dict:
         """Compute performance metrics from trade history."""
         if not trades:
             return {
@@ -136,15 +122,15 @@ class TradingSimulator:
                 'equity_curve': equity,
             }
 
-        # Trade statistics
-        pnls = [t['pnl_pct'] for t in trades]
-        wins = sum(1 for p in pnls if p > 0)
+        # Trade statistics (account-level PnL, not stock-level)
+        pnls_pct = [t['pnl'] / capital * 100 for t in trades]  # account % return per trade
+        wins = sum(1 for p in pnls_pct if p > 0)
         win_rate = wins / len(trades) * 100
 
         # Consecutive losses
         max_consec = 0
         current_consec = 0
-        for p in pnls:
+        for p in pnls_pct:
             if p <= 0:
                 current_consec += 1
                 max_consec = max(max_consec, current_consec)
