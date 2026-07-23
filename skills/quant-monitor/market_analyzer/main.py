@@ -10,6 +10,7 @@ Usage:
   python main.py train --symbol 588170  # Train single symbol
 """
 import sys, os, logging, argparse, io
+import numpy as np
 import pandas as pd
 from datetime import datetime
 
@@ -96,18 +97,37 @@ def cmd_backtest(args):
 
         proba = trainer.predict_proba(features, symbol, 'rebound_3pct') * 100
 
+        # Compute ATR(14), aligned to feature dates
+        c_arr = close.values
+        tr_arr = np.maximum(np.abs(c_arr[1:] - c_arr[:-1]), c_arr[1:] - c_arr[:-1])
+        atr_arr = np.zeros(len(c_arr))
+        for i in range(14, len(c_arr)):
+            atr_arr[i] = np.mean(tr_arr[i-13:i+1])
+        atr_arr[:14] = atr_arr[14] if len(c_arr) > 14 else c_arr[0] * 0.03
+        # Map to feature index: take ATR values where close dates match feature dates
+        atr_vals = pd.Series(atr_arr, index=close.index).reindex(features.index).fillna(atr_arr[-1])
+        use_atr = getattr(args, 'stop_loss', 0) <= 0
+
         sim = TradingSimulator(
-            capital=args.capital, position_pct=args.position / 100,
-            stop_loss=-args.stop_loss / 100, take_profit=args.take_profit / 100,
+            capital=args.capital,
+            position_pct=args.position / 100,
+            stop_loss=args.stop_loss / 100 if not use_atr else None,
+            take_profit=args.take_profit / 100,
+            max_hold=getattr(args, 'max_hold', 10),
         )
-        result = sim.run(close, pd.Series(proba, index=features.index), entry_threshold=args.entry_threshold)
+        result = sim.run(
+            close, pd.Series(proba, index=features.index),
+            entry_threshold=args.entry_threshold,
+            atr_series=atr_vals if use_atr else None,
+            atr_multiple=getattr(args, 'atr_multiple', 2.0),
+        )
 
         print(f"  总交易: {result['total_trades']}次")
         print(f"  胜率: {result['win_rate']}%")
+        print(f"  平均收益: {result['avg_return']}%/笔")
         print(f"  年化收益: {result['annual_return']}%")
         print(f"  最大回撤: {result['max_drawdown']}%")
         print(f"  最大连续亏损: {result['consecutive_losses']}次")
-        print(f"  总收益: {result['total_return']}%")
         print(f"  Sharpe: {result['sharpe_ratio']}")
 
         # Equity curve chart with dates + trade markers
@@ -134,8 +154,9 @@ def cmd_backtest(args):
                     c = 'red' if t.get('pnl_pct', 0) < 0 else 'lime'
                     ax.scatter(feat_idx[xi], equity[xi], color=c, marker='v', s=80, zorder=5)
 
+            ret_total = (result['equity_curve'][-1] / result['equity_curve'][0] - 1) * 100
             ax.set_title(f"{symbol} ({result['total_trades']} trades, "
-                        f"{result['win_rate']}% win, {result['total_return']}% return)")
+                        f"{result['win_rate']}% win, {ret_total:.1f}% return)")
             ax.set_ylabel("Value (CNY)")
             ax.legend(loc='upper left')
             ax.grid(alpha=0.3)
@@ -337,10 +358,14 @@ def main():
                    help="初始本金, 默认 60000")
     b.add_argument("--position", type=float, default=20,
                    help="每次建仓仓位%%, 默认 20")
-    b.add_argument("--stop_loss", type=float, default=3,
-                   help="止损线%%, 默认 3 (即-3%%止损)")
+    b.add_argument("--stop_loss", type=float, default=0,
+                   help="止损%%, 0=ATR自适应(推荐), 或输入固定值如3")
     b.add_argument("--take_profit", type=float, default=5,
-                   help="止盈线%%, 默认 5 (即+5%%止盈减半)")
+                   help="止盈%%, 默认 5")
+    b.add_argument("--max_hold", type=int, default=10,
+                   help="最大持仓天数, 默认 10")
+    b.add_argument("--atr_multiple", type=float, default=2.0,
+                   help="ATR止损倍数, 默认 2.0")
     b.add_argument("--entry_threshold", type=float, default=70,
                    help="底部概率入场阈值, 默认 70")
     b.add_argument("--no-charts", action="store_true",

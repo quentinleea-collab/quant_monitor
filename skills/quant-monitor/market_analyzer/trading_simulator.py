@@ -1,13 +1,12 @@
 """
-Trading simulator — backtests actual trading rules on historical predictions.
+Trading simulator — backtest actual trading rules on historical signals.
 
-Rules:
-  - Capital: 60,000
-  - Entry: 20% of capital when bottom_prob >= 70%
-  - Stop loss: -3% from entry
-  - Take profit: +5%, sell half at this level
-  - After TP: if price drops 3% from the peak reached, sell remaining half
-  - No new entry while holding a position
+Rules (all configurable):
+  - Buy at close on signal day
+  - ATR-based or fixed % stop loss
+  - Trailing take profit
+  - Max hold period (default 10 days)
+  - Only one position at a time
 """
 import logging
 import numpy as np
@@ -19,41 +18,56 @@ logger = logging.getLogger(__name__)
 
 
 class TradingSimulator:
-    """Simulate trading with user-defined rules on historical signals."""
+    """Simulate trades with configurable rules."""
 
     def __init__(self, capital: float = 60000, position_pct: float = 0.20,
-                 stop_loss: float = -0.03, take_profit: float = 0.05,
+                 stop_loss: float = None,          # None = ATR-based
+                 take_profit: float = 0.05,
+                 max_hold: int = 10,
                  trail_stop: float = 0.03):
         self.capital = capital
         self.position_pct = position_pct
-        self.stop_loss = stop_loss
+        self.stop_loss = stop_loss      # fixed % (None = use ATR)
         self.take_profit = take_profit
+        self.max_hold = max_hold
         self.trail_stop = trail_stop
 
     def run(self, close: pd.Series, bottom_prob: pd.Series,
-            entry_threshold: float = 70) -> dict:
+            entry_threshold: float = 70,
+            atr_series: pd.Series = None,
+            atr_multiple: float = 2.0) -> dict:
         """
         Run simulation on historical data.
 
         Args:
             close: daily close prices
-            bottom_prob: model's bottom probability (0-100) per day
+            bottom_prob: model's bottom probability (0-100)
             entry_threshold: enter when prob >= this value
-
-        Returns dict with keys:
-            trades, equity_curve, annual_return, max_drawdown, win_rate,
-            consecutive_losses, total_return, sharpe_ratio
+            atr_series: ATR(14) values (required if stop_loss=None)
+            atr_multiple: multiplier for ATR-based stop (default 2.0)
         """
-        close = close.values if hasattr(close, 'values') else np.array(close)
-        prob = bottom_prob.values if hasattr(bottom_prob, 'values') else np.array(bottom_prob)
+        close = np.asarray(close, dtype=float)
+        prob = np.asarray(bottom_prob, dtype=float)
         n = len(close)
+
+        if atr_series is not None:
+            atr = np.asarray(atr_series, dtype=float)
+        else:
+            # Compute ATR on the fly
+            atr = np.zeros(n)
+            tr = np.maximum(
+                np.abs(close[1:] - close[:-1]),
+                np.maximum(np.abs(close[1:] - close[:-1]), 0)
+            )
+            for i in range(14, n):
+                atr[i] = np.mean(tr[i-13:i+1])
+            atr[:14] = atr[14] if n > 14 else close[0] * 0.03
 
         cash = self.capital
         position = 0.0
         entry_price = 0.0
-        entry_idx = -1       # bar index when position was entered
+        entry_idx = -1
         peak_since_entry = 0.0
-        tp_hit = False
         trades = []
         equity = np.zeros(n)
 
@@ -62,102 +76,83 @@ class TradingSimulator:
 
             if position > 0:
                 peak_since_entry = max(peak_since_entry, price)
+                entry_stop = entry_price * (1 - self.stop_loss) if self.stop_loss else \
+                             entry_price - atr_multiple * atr[i]
+                days_held = i - entry_idx
 
-                # Stop loss
-                if price <= entry_price * (1 + self.stop_loss):
+                # Exit conditions: SL, TP, max hold, trail
+                exit_reason = None
+                exit_price = price
+
+                if price <= entry_stop:
+                    exit_reason = 'stop_loss'
+                elif price >= entry_price * (1 + self.take_profit):
+                    exit_reason = 'take_profit'
+                elif days_held >= self.max_hold:
+                    exit_reason = 'max_hold'
+                elif price <= peak_since_entry * (1 - self.trail_stop):
+                    exit_reason = 'trail_stop'
+
+                if exit_reason:
                     pnl_pct = (price / entry_price - 1) * 100
                     trades.append({
-                        'entry_date': entry_idx, 'exit_date': i,
+                        'entry_idx': entry_idx, 'exit_idx': i,
                         'entry_price': entry_price, 'exit_price': price,
                         'pnl': position * (price - entry_price),
-                        'pnl_pct': pnl_pct, 'exit_reason': 'stop_loss',
+                        'pnl_pct': pnl_pct,
+                        'exit_reason': exit_reason,
+                        'days_held': days_held,
                     })
                     cash += position * price
-                    position = 0; entry_price = 0; entry_idx = -1
-                    peak_since_entry = 0; tp_hit = False
+                    position = 0
+                    entry_price = 0
+                    entry_idx = -1
+                    peak_since_entry = 0.0
 
-                # Take profit (sell half at +5%)
-                elif not tp_hit and price >= entry_price * (1 + self.take_profit):
-                    half = position / 2
-                    cash += half * price
-                    position -= half
-                    tp_hit = True
-
-                # Trail stop (after TP, full exit if drops 3% from peak)
-                elif tp_hit and price <= peak_since_entry * (1 - self.trail_stop):
-                    pnl_pct = (price / entry_price - 1) * 100
-                    trades.append({
-                        'entry_date': entry_idx, 'exit_date': i,
-                        'entry_price': entry_price, 'exit_price': price,
-                        'pnl': position * (price - entry_price),
-                        'pnl_pct': pnl_pct, 'exit_reason': 'trail_stop',
-                    })
-                    cash += position * price
-                    position = 0; entry_price = 0; entry_idx = -1
-                    peak_since_entry = 0; tp_hit = False
-
-            # Entry signal
+            # Entry
             if position == 0 and prob[i] >= entry_threshold:
                 position_size = cash * self.position_pct
                 entry_price = price
                 entry_idx = i
                 position = position_size / price
                 peak_since_entry = price
-                tp_hit = False
                 cash -= position_size
 
             equity[i] = cash + position * price
 
-        # Compute metrics
         return self._compute_metrics(trades, equity, close, self.capital)
 
-    def _compute_metrics(self, trades: list, equity: np.ndarray, close: np.ndarray,
-                          capital: float = 60000) -> dict:
-        """Compute performance metrics from trade history."""
+    def _compute_metrics(self, trades: list, equity: np.ndarray,
+                          close: np.ndarray, capital: float) -> dict:
         if not trades:
-            return {
-                'total_trades': 0, 'win_rate': 0, 'annual_return': 0,
-                'max_drawdown': 0, 'consecutive_losses': 0,
-                'total_return': 0, 'sharpe_ratio': 0,
-                'equity_curve': equity,
-            }
+            return {'total_trades': 0, 'win_rate': 0, 'annual_return': 0,
+                    'max_drawdown': 0, 'avg_return': 0, 'consecutive_losses': 0,
+                    'sharpe_ratio': 0, 'equity_curve': equity, 'trades': []}
 
-        # Trade statistics (account-level PnL, not stock-level)
-        pnls_pct = [t['pnl'] / capital * 100 for t in trades]  # account % return per trade
+        pnls_pct = [t['pnl'] / capital * 100 for t in trades]
         wins = sum(1 for p in pnls_pct if p > 0)
         win_rate = wins / len(trades) * 100
 
-        # Consecutive losses
-        max_consec = 0
-        current_consec = 0
+        max_consec = 0; current = 0
         for p in pnls_pct:
-            if p <= 0:
-                current_consec += 1
-                max_consec = max(max_consec, current_consec)
-            else:
-                current_consec = 0
+            if p <= 0: current += 1; max_consec = max(max_consec, current)
+            else: current = 0
 
-        # Returns
-        total_return = (equity[-1] / equity[0] - 1) * 100
+        total_ret = (equity[-1] / equity[0] - 1) * 100
         days = len(close)
-        annual_return = ((1 + total_return / 100) ** (252 / max(days, 1)) - 1) * 100
-
-        # Max drawdown
+        ann_ret = ((1 + total_ret / 100) ** (252 / max(days, 1)) - 1) * 100
         peak = np.maximum.accumulate(equity)
-        dd = (equity - peak) / peak * 100
-        max_dd = abs(dd.min())
-
-        # Sharpe (annualized, assuming 0 risk-free rate)
-        daily_returns = np.diff(equity) / equity[:-1]
-        sharpe = np.sqrt(252) * np.mean(daily_returns) / np.std(daily_returns) if np.std(daily_returns) > 0 else 0
+        max_dd = abs(np.min((equity - peak) / peak * 100))
+        daily_r = np.diff(equity) / equity[:-1]
+        sharpe = np.sqrt(252) * np.mean(daily_r) / np.std(daily_r) if np.std(daily_r) > 0 else 0
 
         return {
             'total_trades': len(trades),
             'win_rate': round(win_rate, 1),
-            'annual_return': round(annual_return, 1),
+            'annual_return': round(ann_ret, 1),
             'max_drawdown': round(max_dd, 1),
+            'avg_return': round(np.mean(pnls_pct), 1),
             'consecutive_losses': max_consec,
-            'total_return': round(total_return, 1),
             'sharpe_ratio': round(sharpe, 2),
             'equity_curve': equity,
             'trades': trades,
