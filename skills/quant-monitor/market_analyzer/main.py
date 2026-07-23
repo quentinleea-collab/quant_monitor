@@ -258,6 +258,16 @@ def cmd_entry(args):
             for f in r.top_features[:5]:
                 print(f"    {f['feature']}: {f['contribution']:.1f}%")
 
+    # Run backtest if requested
+    if getattr(args, 'with_backtest', False):
+        # Ensure backtest args have defaults from entry's context
+        for attr, default in [('capital', 60000), ('position', 20),
+                               ('stop_loss', 3), ('take_profit', 5),
+                               ('entry_threshold', 70), ('no_charts', False)]:
+            if not hasattr(args, attr):
+                setattr(args, attr, default)
+        cmd_backtest(args)
+
     print()
 
 
@@ -318,9 +328,13 @@ def main():
 
     e = sub.add_parser("entry", help="Analyze buy-point timing within bottom zone",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例: python main.py entry --symbol 159915")
+        epilog="示例: python main.py entry --symbol 159915 --with-backtest")
     e.add_argument("--symbol", "--symbols", nargs="*", default=None, dest="symbols",
                    help="股票代码 (默认: 全部)")
+    e.add_argument("--with-backtest", action="store_true",
+                   help="同时运行交易模拟回测")
+    e.add_argument("--capital", type=float, default=60000,
+                   help="回测本金 (默认: 60000)")
     e.add_argument("--verbose", "-v", action="store_true", help="详细日志")
 
     args = p.parse_args()
