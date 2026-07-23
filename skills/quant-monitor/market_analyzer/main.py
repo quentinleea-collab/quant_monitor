@@ -191,96 +191,72 @@ def cmd_report(args):
 
 
 def cmd_entry(args):
-    """Analyze buy-point timing within a bottom zone."""
+    """Analyze buy-point timing with ML-learned weights and adaptive risk."""
     from entry_detector import EntryDetector
     symbols = args.symbols or cfg.symbols
 
     for symbol in symbols:
         print(f"\n{'='*70}")
-        print(f"  {cfg.symbol_names.get(symbol, symbol)} ({symbol}) — 买点分析")
+        name = cfg.symbol_names.get(symbol, symbol)
+        print(f"  {name} ({symbol}) — 买点分析 (ML驱动)")
         print(f"{'='*70}")
 
-        # First get bottom probability from scanner
-        from daily_scanner import DailyScanner
-        try:
-            scanner = DailyScanner(cfg)
-            results = scanner.scan([symbol])
-            bp = results.iloc[0]['bottom_prob'] if len(results) > 0 else None
-        except Exception:
-            bp = None
-
-        # Run entry detector
         detector = EntryDetector()
-        result = detector.analyze(symbol, bottom_prob=bp)
+        r = detector.analyze(symbol)
 
-        score = result['entry_score']
-        bar = '█' * (score // 5) + '░' * (20 - score // 5)
-
-        print(f"  底部概率: {result['bottom_context']}")
-        print(f"  当前价格: {result['entry_price']}")
-        print(f"  买点评分: {score}/100  [{bar}]")
-        print(f"  建议: {result['recommendation']}")
-        print(f"  置信度: {result['confidence']}")
-        print(f"  {'─'*50}")
-        print(f"  逐级止损:")
-        print(f"    初始止损:  {result['stop_initial']}")
-        print(f"    保本止损:  {result['stop_breakeven']}")
-        print(f"    移动止盈:  {result['stop_trail_tight']}")
+        # Score bar
+        bar = '█' * (int(r.entry_score) // 5) + '░' * (20 - int(r.entry_score) // 5)
+        print(f"  行情阶段: {r.regime}")
+        print(f"  当前价格: {r.entry_price}")
+        print(f"  买点评分: {r.entry_score:.0f}/100  [{bar}]")
+        print(f"  建议: {r.recommendation}")
         print(f"  {'─'*50}")
 
-        # Volume detail
-        vol = result.get('volume_signal', {})
-        if vol:
-            print(f"  量能: {vol.get('shrinkage','')} {vol.get('expansion','')} "
-                  f"{vol.get('pattern','')} (量比:{vol.get('vol_ratio','')})")
+        # Stop & Position
+        print(f"  止损: {r.stop_loss} (基于: {r.stop_reason})")
+        print(f"  风险: -{r.risk_pct:.1f}%  盈亏比: {r.reward_risk}")
+        print(f"  推荐仓位: {r.position_pct:.0f}%")
+        print(f"  {'─'*50}")
 
-        # Intraday detail
-        intra = result.get('intraday_signal', {})
-        if intra:
-            if intra.get('fallback'):
-                print(f"  分时: {intra['status']}")
-            else:
-                print(f"  60分钟: {intra.get('m60_macd','')} RSI={intra.get('m60_rsi','')} {intra.get('m60_rsi_signal','')}")
-                print(f"  120分钟: RSI={intra.get('m120_rsi','')} {intra.get('m120_rsi_signal','')}")
+        # Dynamic supports
+        print(f"  动态支撑位:")
+        for s in r.signals.get('supports', [])[:4]:
+            print(f"    {s['price']:.3f}  [{s['type']}] 强度:{s['strength']:.0%}")
 
-        # Pattern detail
-        pat = result.get('pattern_signal', {})
-        if pat:
-            signals = [v for k, v in pat.items() if not k.startswith('_')]
-            if signals:
-                print(f"  K线形态: {', '.join(signals)}")
+        # MA cluster
+        ma = r.signals.get('ma_cluster', {})
+        if ma:
+            below = ma.get('below', {})
+            above = ma.get('above', {})
+            print(f"  均线: {' | '.join(f'{k}={v:.3f}' for k,v in {**below, **above}.items())}")
+            print(f"  价格下方均线: {len(below)}条")
 
-        # Support detail
-        sup = result.get('support_signal', {})
-        if sup:
-            print(f"  支撑位: {sup.get('level','')} "
-                  f"(最近前低:{sup.get('nearest_support','')} "
-                  f"距离:{sup.get('distance_pct','')}% "
-                  f"MA60:{sup.get('ma60','')})")
+        # Volume + K-line
+        vol = r.signals.get('volume', {})
+        kline = r.signals.get('kline', {})
+        vol_desc = '缩量' if vol.get('shrinking') else ('放量' if vol.get('expanding') else '正常')
+        print(f"  量能: {vol_desc} (量比:{vol.get('vol_ratio', 'N/A')})")
+        kline_ok = [k for k, v in kline.items() if v and not k.startswith('_')]
+        if kline_ok:
+            print(f"  K线: {', '.join(kline_ok)}")
+        else:
+            print(f"  K线: 无反转形态")
 
-        # Multi-TF
-        mtf = result.get('multitf_signal', {})
-        if mtf:
-            print(f"  多周期: {mtf.get('daily_rsi','')} {mtf.get('daily_macd','')} "
-                  f"{mtf.get('tf_alignment','')}")
+        print(f"  {'─'*50}")
 
-        # What's holding back the score
-        if score < 70:
-            missing = []
-            vol = result.get('volume_signal', {})
-            if vol.get('expansion') == '未放量':
-                missing.append('等待放量(量>MA5×1.1)')
-            if not intra.get('m60_macd') and not intra.get('fallback'):
-                missing.append('等待60分钟MACD拐头')
-            elif intra.get('fallback'):
-                missing.append('分时数据不可用')
-            if not pat:
-                missing.append('等待K线反转形态(锤子线/吞没/启明星)')
-            sup = result.get('support_signal', {})
-            if sup.get('distance_pct', 99) > 5:
-                missing.append(f"距支撑位{sup.get('distance_pct','')}%偏远")
-            if missing:
-                print(f"  等待信号: {' | '.join(missing)}")
+        # Historical stats
+        if r.similar_count >= 5:
+            print(f"  历史统计 (样本{r.similar_count}):")
+            print(f"    上涨概率: {r.win_rate:.0f}%  平均涨幅: {r.avg_return:+.1f}%")
+            print(f"    平均回撤: -{r.avg_max_dd:.1f}%  90%分位: -{r.dd_90pct:.1f}%  最差: -{r.worst_dd:.1f}%")
+        else:
+            print(f"  历史统计: 样本不足")
+
+        # Feature importance
+        if r.top_features:
+            print(f"  因子贡献 (SHAP):")
+            for f in r.top_features[:5]:
+                print(f"    {f['feature']}: {f['contribution']:.1f}%")
 
     print()
 
