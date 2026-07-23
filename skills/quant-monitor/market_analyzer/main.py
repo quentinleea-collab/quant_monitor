@@ -115,10 +115,11 @@ def cmd_backtest(args):
         if len(equity) > 0 and not args.no_charts:
             import matplotlib; matplotlib.use('Agg')
             import matplotlib.pyplot as plt
+            os.makedirs(cfg.output_dir, exist_ok=True)
             fig, ax = plt.subplots(figsize=(12, 5))
             ax.plot(equity, color='steelblue')
             ax.axhline(y=args.capital, color='gray', linestyle='--', alpha=0.5)
-            ax.set_title(f"{cfg.symbol_names.get(symbol, symbol)} Equity Curve")
+            ax.set_title(f"{symbol} Equity Curve")
             ax.set_ylabel("Account Value")
             path = f"{cfg.output_dir}/{symbol}_equity_{datetime.now().strftime('%Y%m%d')}.png"
             fig.savefig(path, dpi=150, bbox_inches='tight')
