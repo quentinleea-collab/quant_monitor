@@ -644,8 +644,8 @@ class EntryDetector:
     def _load_daily(self, symbol: str, start: str = None,
                     end: str = None) -> pd.DataFrame:
         daily = self.loader.fetch_daily(
-            symbol, start or '20240101', end or '20260722'
-        )
+            symbol, start or '20240101',
+            end or __import__('datetime').datetime.now().strftime('%Y%m%d'))
         daily = daily.sort_values('date').reset_index(drop=True)
         daily = compute_indicators(daily)
         return daily

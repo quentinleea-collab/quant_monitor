@@ -13,7 +13,7 @@ class MarketAnalyzerConfig:
 
     # Data
     start_date: str = "20000101"
-    end_date: str = "20260717"
+    end_date: str = __import__('datetime').datetime.now().strftime('%Y%m%d')
 
     # Label: future N-day max return >= threshold -> label=1 (bottom found)
     label_horizon: int = 10       # days forward
