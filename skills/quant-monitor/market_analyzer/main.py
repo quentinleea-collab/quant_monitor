@@ -130,6 +130,10 @@ def cmd_backtest(args):
         print(f"  最大连续亏损: {result['consecutive_losses']}次")
         print(f"  Sharpe: {result['sharpe_ratio']}")
 
+        # Auto-optimize take-profit if requested
+        if getattr(args, 'optimize', False):
+            _optimize_take_profit(features, close, proba, symbol, atr_vals, args)
+
         # Equity curve chart with dates + trade markers
         equity = result['equity_curve']
         if len(equity) > 0 and not args.no_charts:
@@ -166,6 +170,71 @@ def cmd_backtest(args):
             fig.savefig(path, dpi=150, bbox_inches='tight')
             plt.close(fig)
             print(f"  资金曲线: {path}")
+
+
+def _optimize_take_profit(features, close, proba, symbol, atr_vals, args):
+    """Grid-search optimal take-profit level from historical data."""
+    from trading_simulator import TradingSimulator
+    tp_levels = [3, 4, 5, 6, 7, 8, 10]
+    results = []
+    print(f"\n  {'─'*50}")
+    print(f"  止盈参数优化 (网格搜索):")
+    print(f"  {'TP%':<8} {'交易':<6} {'胜率':<8} {'年化':<8} {'回撤':<8} {'Sharpe':<8} {'评分':<8}")
+    print(f"  {'─'*50}")
+
+    best_score = -999
+    best_tp = 5
+    for tp in tp_levels:
+        sim = TradingSimulator(
+            capital=args.capital, position_pct=args.position / 100,
+            stop_loss=args.stop_loss / 100 if args.stop_loss > 0 else None,
+            take_profit=tp / 100,
+            max_hold=getattr(args, 'max_hold', 10),
+        )
+        r = sim.run(close, pd.Series(proba, index=features.index),
+                    entry_threshold=args.entry_threshold,
+                    atr_series=atr_vals if args.stop_loss <= 0 else None)
+        if r['total_trades'] < 3:
+            continue
+        # Composite score: Sharpe × win_rate / max_drawdown
+        score = r['sharpe_ratio'] * r['win_rate'] / max(r['max_drawdown'], 0.1)
+        results.append((tp, r, score))
+        marker = ' ←' if score > best_score else ''
+        if score > best_score:
+            best_score = score
+            best_tp = tp
+        print(f"  {tp}%       {r['total_trades']:<6} {r['win_rate']:<8.1f} {r['annual_return']:<8.1f} "
+              f"{r['max_drawdown']:<8.1f} {r['sharpe_ratio']:<8.2f} {score:<8.1f}{marker}")
+
+    print(f"  {'─'*50}")
+    print(f"  推荐止盈: {best_tp}% (Sharpe×胜率/回撤 综合最优)")
+    print()
+
+    # Also scan stop-loss multipliers
+    print(f"  ATR止损倍数优化:")
+    print(f"  {'倍数':<8} {'交易':<6} {'胜率':<8} {'年化':<8} {'回撤':<8} {'Sharpe':<8} {'评分':<8}")
+    print(f"  {'─'*50}")
+    best_sl = 2.0; best_sl_score = -999
+    for mult in [1.0, 1.5, 2.0, 2.5, 3.0]:
+        sim = TradingSimulator(
+            capital=args.capital, position_pct=args.position / 100,
+            stop_loss=None, take_profit=best_tp / 100,
+            max_hold=getattr(args, 'max_hold', 10),
+        )
+        r = sim.run(close, pd.Series(proba, index=features.index),
+                    entry_threshold=args.entry_threshold,
+                    atr_series=atr_vals, atr_multiple=mult)
+        if r['total_trades'] < 5:
+            continue
+        score = r['sharpe_ratio'] * r['win_rate'] / max(r['max_drawdown'], 0.1)
+        marker = ' ←' if score > best_sl_score else ''
+        if score > best_sl_score:
+            best_sl_score = score; best_sl = mult
+        print(f"  {mult}×       {r['total_trades']:<6} {r['win_rate']:<8.1f} {r['annual_return']:<8.1f} "
+              f"{r['max_drawdown']:<8.1f} {r['sharpe_ratio']:<8.2f} {score:<8.1f}{marker}")
+    print(f"  {'─'*50}")
+    print(f"  推荐: --take_profit {best_tp} --atr_multiple {best_sl}")
+    print()
 
 
 def cmd_scan(args):
@@ -368,6 +437,8 @@ def main():
                    help="ATR止损倍数, 默认 2.0")
     b.add_argument("--entry_threshold", type=float, default=70,
                    help="底部概率入场阈值, 默认 70")
+    b.add_argument("--optimize", action="store_true",
+                   help="自动优化止盈和止损参数")
     b.add_argument("--no-charts", action="store_true",
                    help="不生成资金曲线图")
     b.add_argument("--verbose", "-v", action="store_true", help="详细日志")
