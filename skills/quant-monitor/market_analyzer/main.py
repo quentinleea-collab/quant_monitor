@@ -191,30 +191,39 @@ def cmd_report(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Market Bottom Detector")
+    p = argparse.ArgumentParser(
+        description="Market Bottom Detector — XGBoost+SHAP 底部概率检测",
+        epilog="代码前缀: 6xxxxx=上交所 0xxxxx/3xxxxx=深交所 例: --symbol 600519 000858 300750",
+    )
     sub = p.add_subparsers(dest="command")
 
-    t = sub.add_parser("train", help="Train models")
-    t.add_argument("--symbols", nargs="*", default=None, help="Symbols to train (default: all)")
+    t = sub.add_parser("train", help="Train models",
+        epilog="例: python main.py train --symbol 600519 000858")
+    t.add_argument("--symbols", nargs="*", default=None,
+                   help="股票代码 (默认: 000001 399001 399006 159915)")
     t.add_argument("--start", default=cfg.start_date)
     t.add_argument("--end", default=cfg.end_date)
     t.add_argument("--verbose", "-v", action="store_true")
 
-    s = sub.add_parser("scan", help="Daily scan")
-    s.add_argument("--symbols", nargs="*", default=None)
+    s = sub.add_parser("scan", help="Daily scan",
+        epilog="例: python main.py scan --symbol 600519")
+    s.add_argument("--symbols", nargs="*", default=None,
+                   help="股票代码 (默认: 全部已训练标的)")
     s.add_argument("--verbose", "-v", action="store_true")
 
     r = sub.add_parser("report", help="Full report (train + scan)")
     r.add_argument("--symbols", nargs="*", default=None)
     r.add_argument("--verbose", "-v", action="store_true")
 
-    b = sub.add_parser("backtest", help="Run trading simulator")
-    b.add_argument("--symbols", nargs="*", default=None)
-    b.add_argument("--capital", type=float, default=60000, help="Initial capital")
-    b.add_argument("--position", type=float, default=20, help="Position size pct")
-    b.add_argument("--stop_loss", type=float, default=3, help="Stop loss pct")
-    b.add_argument("--take_profit", type=float, default=5, help="Take profit pct")
-    b.add_argument("--entry_threshold", type=float, default=70, help="Entry threshold")
+    b = sub.add_parser("backtest", help="Trading simulator",
+        epilog="例: python main.py backtest --symbol 600519 --capital 100000")
+    b.add_argument("--symbols", nargs="*", default=None,
+                   help="股票代码 (默认: 全部已训练标的)")
+    b.add_argument("--capital", type=float, default=60000, help="本金 (默认: 60000)")
+    b.add_argument("--position", type=float, default=20, help="仓位pct (默认: 20)")
+    b.add_argument("--stop_loss", type=float, default=3, help="止损pct (默认: 3)")
+    b.add_argument("--take_profit", type=float, default=5, help="止盈pct (默认: 5)")
+    b.add_argument("--entry_threshold", type=float, default=70, help="入场阈值 (默认: 70)")
     b.add_argument("--no-charts", action="store_true")
     b.add_argument("--verbose", "-v", action="store_true")
 
