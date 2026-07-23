@@ -191,41 +191,58 @@ def cmd_report(args):
 
 
 def main():
+    epi = (
+        "代码规则: 6xxxxx=上交所  0xxxxx/3xxxxx=深交所  1xxxxx=深交所ETF\n"
+        "示例: python main.py train --symbol 600519      # 训练茅台\n"
+        "      python main.py scan  --symbol 600519      # 扫描茅台\n"
+        "      python main.py backtest --symbol 600519 --capital 100000"
+    )
     p = argparse.ArgumentParser(
-        description="Market Bottom Detector — XGBoost+SHAP 底部概率检测",
-        epilog="代码前缀: 6xxxxx=上交所 0xxxxx/3xxxxx=深交所 例: --symbol 600519 000858 300750",
+        description="Market Bottom Detector — XGBoost+SHAP A股底部概率检测",
+        epilog=epi,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="command")
 
-    t = sub.add_parser("train", help="Train models",
-        epilog="例: python main.py train --symbol 600519 000858")
-    t.add_argument("--symbols", nargs="*", default=None,
-                   help="股票代码 (默认: 000001 399001 399006 159915)")
-    t.add_argument("--start", default=cfg.start_date)
-    t.add_argument("--end", default=cfg.end_date)
-    t.add_argument("--verbose", "-v", action="store_true")
+    t = sub.add_parser("train", help="Train models for specified stocks",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例: python main.py train --symbol 600519 000858 300750")
+    t.add_argument("--symbol", "--symbols", nargs="*", default=None, dest="symbols",
+                   help="股票代码, 空格分隔 (默认: 000001 399001 399006 159915)")
+    t.add_argument("--start", default=cfg.start_date, help="起始日期 YYYYMMDD")
+    t.add_argument("--end", default=cfg.end_date, help="结束日期 YYYYMMDD")
+    t.add_argument("--verbose", "-v", action="store_true", help="详细日志")
 
-    s = sub.add_parser("scan", help="Daily scan",
-        epilog="例: python main.py scan --symbol 600519")
-    s.add_argument("--symbols", nargs="*", default=None,
+    s = sub.add_parser("scan", help="Scan current market for bottom signals",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例: python main.py scan --symbol 600519")
+    s.add_argument("--symbol", "--symbols", nargs="*", default=None, dest="symbols",
                    help="股票代码 (默认: 全部已训练标的)")
-    s.add_argument("--verbose", "-v", action="store_true")
+    s.add_argument("--verbose", "-v", action="store_true", help="详细日志")
 
-    r = sub.add_parser("report", help="Full report (train + scan)")
-    r.add_argument("--symbols", nargs="*", default=None)
+    r = sub.add_parser("report", help="Train + scan in one step")
+    r.add_argument("--symbol", "--symbols", nargs="*", default=None, dest="symbols",
+                   help="股票代码 (默认: 全部)")
     r.add_argument("--verbose", "-v", action="store_true")
 
-    b = sub.add_parser("backtest", help="Trading simulator",
-        epilog="例: python main.py backtest --symbol 600519 --capital 100000")
-    b.add_argument("--symbols", nargs="*", default=None,
+    b = sub.add_parser("backtest", help="Simulate trading with historical signals",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例: python main.py backtest --symbol 600519 --capital 100000 --position 20")
+    b.add_argument("--symbol", "--symbols", nargs="*", default=None, dest="symbols",
                    help="股票代码 (默认: 全部已训练标的)")
-    b.add_argument("--capital", type=float, default=60000, help="本金 (默认: 60000)")
-    b.add_argument("--position", type=float, default=20, help="仓位pct (默认: 20)")
-    b.add_argument("--stop_loss", type=float, default=3, help="止损pct (默认: 3)")
-    b.add_argument("--take_profit", type=float, default=5, help="止盈pct (默认: 5)")
-    b.add_argument("--entry_threshold", type=float, default=70, help="入场阈值 (默认: 70)")
-    b.add_argument("--no-charts", action="store_true")
-    b.add_argument("--verbose", "-v", action="store_true")
+    b.add_argument("--capital", type=float, default=60000,
+                   help="初始本金, 默认 60000")
+    b.add_argument("--position", type=float, default=20,
+                   help="每次建仓仓位%%, 默认 20")
+    b.add_argument("--stop_loss", type=float, default=3,
+                   help="止损线%%, 默认 3 (即-3%%止损)")
+    b.add_argument("--take_profit", type=float, default=5,
+                   help="止盈线%%, 默认 5 (即+5%%止盈减半)")
+    b.add_argument("--entry_threshold", type=float, default=70,
+                   help="底部概率入场阈值, 默认 70")
+    b.add_argument("--no-charts", action="store_true",
+                   help="不生成资金曲线图")
+    b.add_argument("--verbose", "-v", action="store_true", help="详细日志")
 
     args = p.parse_args()
 
