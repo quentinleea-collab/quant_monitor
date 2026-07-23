@@ -190,11 +190,107 @@ def cmd_report(args):
     cmd_scan(args)
 
 
+def cmd_entry(args):
+    """Analyze buy-point timing within a bottom zone."""
+    from entry_detector import EntryDetector
+    symbols = args.symbols or cfg.symbols
+
+    for symbol in symbols:
+        print(f"\n{'='*70}")
+        print(f"  {cfg.symbol_names.get(symbol, symbol)} ({symbol}) — 买点分析")
+        print(f"{'='*70}")
+
+        # First get bottom probability from scanner
+        from daily_scanner import DailyScanner
+        try:
+            scanner = DailyScanner(cfg)
+            results = scanner.scan([symbol])
+            bp = results.iloc[0]['bottom_prob'] if len(results) > 0 else None
+        except Exception:
+            bp = None
+
+        # Run entry detector
+        detector = EntryDetector()
+        result = detector.analyze(symbol, bottom_prob=bp)
+
+        score = result['entry_score']
+        bar = '█' * (score // 5) + '░' * (20 - score // 5)
+
+        print(f"  底部概率: {result['bottom_context']}")
+        print(f"  当前价格: {result['entry_price']}")
+        print(f"  买点评分: {score}/100  [{bar}]")
+        print(f"  建议: {result['recommendation']}")
+        print(f"  置信度: {result['confidence']}")
+        print(f"  {'─'*50}")
+        print(f"  逐级止损:")
+        print(f"    初始止损:  {result['stop_initial']}")
+        print(f"    保本止损:  {result['stop_breakeven']}")
+        print(f"    移动止盈:  {result['stop_trail_tight']}")
+        print(f"  {'─'*50}")
+
+        # Volume detail
+        vol = result.get('volume_signal', {})
+        if vol:
+            print(f"  量能: {vol.get('shrinkage','')} {vol.get('expansion','')} "
+                  f"{vol.get('pattern','')} (量比:{vol.get('vol_ratio','')})")
+
+        # Intraday detail
+        intra = result.get('intraday_signal', {})
+        if intra:
+            if intra.get('fallback'):
+                print(f"  分时: {intra['status']}")
+            else:
+                print(f"  60分钟: {intra.get('m60_macd','')} RSI={intra.get('m60_rsi','')} {intra.get('m60_rsi_signal','')}")
+                print(f"  120分钟: RSI={intra.get('m120_rsi','')} {intra.get('m120_rsi_signal','')}")
+
+        # Pattern detail
+        pat = result.get('pattern_signal', {})
+        if pat:
+            signals = [v for k, v in pat.items() if not k.startswith('_')]
+            if signals:
+                print(f"  K线形态: {', '.join(signals)}")
+
+        # Support detail
+        sup = result.get('support_signal', {})
+        if sup:
+            print(f"  支撑位: {sup.get('level','')} "
+                  f"(最近前低:{sup.get('nearest_support','')} "
+                  f"距离:{sup.get('distance_pct','')}% "
+                  f"MA60:{sup.get('ma60','')})")
+
+        # Multi-TF
+        mtf = result.get('multitf_signal', {})
+        if mtf:
+            print(f"  多周期: {mtf.get('daily_rsi','')} {mtf.get('daily_macd','')} "
+                  f"{mtf.get('tf_alignment','')}")
+
+        # What's holding back the score
+        if score < 70:
+            missing = []
+            vol = result.get('volume_signal', {})
+            if vol.get('expansion') == '未放量':
+                missing.append('等待放量(量>MA5×1.1)')
+            if not intra.get('m60_macd') and not intra.get('fallback'):
+                missing.append('等待60分钟MACD拐头')
+            elif intra.get('fallback'):
+                missing.append('分时数据不可用')
+            if not pat:
+                missing.append('等待K线反转形态(锤子线/吞没/启明星)')
+            sup = result.get('support_signal', {})
+            if sup.get('distance_pct', 99) > 5:
+                missing.append(f"距支撑位{sup.get('distance_pct','')}%偏远")
+            if missing:
+                print(f"  等待信号: {' | '.join(missing)}")
+
+    print()
+
+
 def main():
     epi = (
         "代码规则: 6xxxxx=上交所  0xxxxx/3xxxxx=深交所  1xxxxx=深交所ETF\n"
-        "示例: python main.py train --symbol 600519      # 训练茅台\n"
-        "      python main.py scan  --symbol 600519      # 扫描茅台\n"
+        "示例: python main.py train  --symbol 600519            # 训练\n"
+        "      python main.py scan   --symbol 600519            # 扫描\n"
+        "      python main.py entry  --symbol 600519            # 买点分析\n"
         "      python main.py backtest --symbol 600519 --capital 100000"
     )
     p = argparse.ArgumentParser(
@@ -244,6 +340,13 @@ def main():
                    help="不生成资金曲线图")
     b.add_argument("--verbose", "-v", action="store_true", help="详细日志")
 
+    e = sub.add_parser("entry", help="Analyze buy-point timing within bottom zone",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例: python main.py entry --symbol 159915")
+    e.add_argument("--symbol", "--symbols", nargs="*", default=None, dest="symbols",
+                   help="股票代码 (默认: 全部)")
+    e.add_argument("--verbose", "-v", action="store_true", help="详细日志")
+
     args = p.parse_args()
 
     if not args.command:
@@ -257,7 +360,7 @@ def main():
     if hasattr(args, 'end') and args.end:
         cfg.end_date = args.end
 
-    {"train": cmd_train, "scan": cmd_scan, "report": cmd_report, "backtest": cmd_backtest}[args.command](args)
+    {"train": cmd_train, "scan": cmd_scan, "report": cmd_report, "backtest": cmd_backtest, "entry": cmd_entry}[args.command](args)
 
 
 if __name__ == "__main__":
