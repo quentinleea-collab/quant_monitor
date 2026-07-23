@@ -445,24 +445,42 @@ class EntryDetector:
 
     def _calc_invalidation_stop(self, daily: pd.DataFrame,
                                  current_price: float,
-                                 nearest_support: dict = None) -> Tuple[float, str, float]:
+                                 nearest_support: dict = None,
+                                 atr_multiple: float = 2.0) -> Tuple[float, str, float]:
         """
-        Calculate stop loss at the "trade invalidation" point.
-        Uses: platform low, MA20, volume cluster — whichever is CLOSEST
-        below entry but still gives 4-8% risk.
-        NOT historical lows or measured-move targets.
+        Adaptive invalidation stop based on ATR + structural levels.
+
+        Priority:
+          1. Structural level (platform/MA/volume cluster) within 1.5-3× ATR
+          2. 2× ATR below entry (volatility-adaptive fallback)
+          3. Hard minimum: 5% below entry
+
+        ATR adapts to the stock's actual volatility.
         """
         close = daily['close'].values
         low = daily['low'].values
+        high = daily['high'].values
 
-        # Candidate invalidation levels
+        # Compute ATR(14)
+        tr = np.maximum(high[1:] - low[1:],
+                        np.maximum(abs(high[1:] - close[:-1]),
+                                   abs(low[1:] - close[:-1])))
+        atr = float(np.mean(tr[-14:])) if len(tr) >= 14 else current_price * 0.03
+        atr_pct = atr / current_price * 100
+        # Target risk: 1.5× ATR for stop distance, hard cap at 10%
+        target_risk = min(1.5 * atr_pct, 10.0)  # never exceed 10% risk
+        target_risk = max(target_risk, 3.0)      # never tighter than 3%
+        min_risk = target_risk * 0.8
+        max_risk = target_risk * 1.2
+
+        # Candidate structural levels
         candidates = []
 
-        # 1. Recent platform: lowest low in last 15 days
+        # 1. Recent platform low
         platform_low = float(np.min(low[-15:])) if len(low) >= 15 else current_price * 0.95
         candidates.append(('近15日平台低点', platform_low))
 
-        # 2. MA20
+        # 2. MA20 (only if below current price)
         ma20 = float(pd.Series(close).rolling(20).mean().iloc[-1])
         if not pd.isna(ma20) and ma20 < current_price:
             candidates.append(('MA20', ma20))
@@ -472,28 +490,23 @@ class EntryDetector:
         if not pd.isna(ma30) and ma30 < current_price:
             candidates.append(('MA30', ma30))
 
-        # 4. Nearest volume cluster from dynamic supports
-        if nearest_support:
-            candidates.append((f"动态支撑({nearest_support['type']})",
-                              nearest_support['price']))
+        # 4. Dynamic support
+        if nearest_support and nearest_support['price'] < current_price:
+            candidates.append(('动态支撑', nearest_support['price']))
 
-        # Pick the level that gives risk between 4-8%
-        best_stop = current_price * 0.95  # default 5%
-        best_reason = '默认-5%'
-        best_risk = 5.0
+        # Pick best structural level within risk range
+        best_stop = current_price * (1 - atr_pct * atr_multiple / 100)
+        best_reason = f'ATR×{atr_multiple}(ATR={atr_pct:.1f}%)'
+        best_risk = atr_pct * atr_multiple
 
         for reason, level in candidates:
             risk = (current_price - level) / current_price * 100
-            if 3.5 < risk < 9:  # within acceptable range
-                # Prefer levels closer to 5-6% risk
-                if abs(risk - 5.5) < abs(best_risk - 5.5):
-                    best_stop = level * 0.995  # slight buffer below support
-                    best_reason = reason
+            if min_risk < risk < max_risk:
+                # Prefer structural levels over pure ATR
+                if abs(risk - (min_risk + max_risk) / 2) < abs(best_risk - (min_risk + max_risk) / 2):
+                    best_stop = level * 0.995
+                    best_reason = f'{reason}(ATR={atr_pct:.1f}%)'
                     best_risk = risk
-            elif 3 < risk <= 3.5 and best_risk > 8:  # tight but acceptable
-                best_stop = level * 0.995
-                best_reason = reason
-                best_risk = risk
 
         return best_stop, best_reason, best_risk
 
