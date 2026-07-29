@@ -301,6 +301,51 @@ def cmd_report(args):
     cmd_scan(args)
 
 
+def cmd_exit(args):
+    """Compare 4 exit strategies across 3 market regimes."""
+    from exit_backtest import ExitBacktest
+    symbols = args.symbols or cfg.symbols
+
+    for symbol in symbols:
+        eb = ExitBacktest()
+        df = eb.compare(symbol)
+        if df.empty:
+            print(f"\n  {cfg.symbol_names.get(symbol, symbol)}: 数据不足, 跳过")
+            continue
+
+        name = cfg.symbol_names.get(symbol, symbol)
+        print(f"\n{'='*85}")
+        print(f"  {name} ({symbol}) — 退出策略对比")
+        print(f"{'='*85}")
+
+        # Best model per regime
+        for regime in ['down', 'sideways', 'up']:
+            subset = df[df['行情'] == regime].sort_values('Sharpe', ascending=False)
+            if subset.empty:
+                continue
+            best = subset.iloc[0]
+            regime_cn = {'down': '下跌', 'sideways': '横盘', 'up': '上涨'}.get(regime, regime)
+            print(f"\n  ▸ {regime_cn}市 (最优: {best['模型']})")
+            print(f"    {best['交易']}笔  胜率{best['胜率%']:.0f}%  均收益{best['均收益%']:+.2f}%  "
+                  f"盈亏比{best['盈亏比']:.1f}  Sharpe{best['Sharpe']:.2f}  退出:{best['退出方式']}")
+
+        # Full table
+        print(f"\n  {'模型':<18} {'行情':<6} {'交易':<5} {'胜率':<7} {'均收益':<8} {'持仓天':<7} {'回撤':<7} {'盈亏比':<7} {'Sharpe':<7}")
+        print(f"  {'─'*80}")
+        for _, r in df.sort_values(['行情', 'Sharpe'], ascending=[True, False]).iterrows():
+            print(f"  {r['模型']:<18} {r['行情']:<6} {r['交易']:<5} {r['胜率%']:<7.1f} "
+                  f"{r['均收益%']:<8.2f} {r['均持仓天']:<7.1f} {r['最大回撤%']:<7.1f} "
+                  f"{r['盈亏比']:<7.1f} {r['Sharpe']:<7.2f}")
+
+        print()
+
+    print("  ★ 推荐: 按行情阶段使用不同退出模型")
+    print("    下跌市 → 快速止损 (Trail/ATR)")
+    print("    横盘市 → 网格思维 (MA cascade)")
+    print("    上涨市 → 让利润跑 (Trail/MA half)")
+    print()
+
+
 def cmd_entry(args):
     """Analyze buy-point timing with ML-learned weights and adaptive risk."""
     from entry_detector import EntryDetector
@@ -454,6 +499,13 @@ def main():
                    help="回测本金 (默认: 60000)")
     e.add_argument("--verbose", "-v", action="store_true", help="详细日志")
 
+    x = sub.add_parser("exit", help="Compare exit strategies across market regimes",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例: python main.py exit --symbol 159915")
+    x.add_argument("--symbol", "--symbols", nargs="*", default=None, dest="symbols",
+                   help="股票代码 (默认: 全部)")
+    x.add_argument("--verbose", "-v", action="store_true", help="详细日志")
+
     args = p.parse_args()
 
     if not args.command:
@@ -467,7 +519,8 @@ def main():
     if hasattr(args, 'end') and args.end:
         cfg.end_date = args.end
 
-    {"train": cmd_train, "scan": cmd_scan, "report": cmd_report, "backtest": cmd_backtest, "entry": cmd_entry}[args.command](args)
+    {"train": cmd_train, "scan": cmd_scan, "report": cmd_report,
+     "backtest": cmd_backtest, "entry": cmd_entry, "exit": cmd_exit}[args.command](args)
 
 
 if __name__ == "__main__":
