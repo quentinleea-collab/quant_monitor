@@ -318,14 +318,19 @@ def cmd_exit(args):
         print(f"  {name} ({symbol}) — 退出策略对比")
         print(f"{'='*85}")
 
-        # Best model per regime
+        # Best model per regime (only for regimes with enough data)
         for regime in ['down', 'sideways', 'up']:
             subset = df[df['行情'] == regime].sort_values('Sharpe', ascending=False)
             if subset.empty:
                 continue
             best = subset.iloc[0]
             regime_cn = {'down': '下跌', 'sideways': '横盘', 'up': '上涨'}.get(regime, regime)
-            print(f"\n  ▸ {regime_cn}市 (最优: {best['模型']})")
+            note = ''
+            if best['交易'] < 5:
+                note = f' ⚠ 样本不足({best[\"交易\"]}笔), 置信度低'
+            elif regime == 'up':
+                note = ' (底部信号在上涨市天然稀少)'
+            print(f"\n  ▸ {regime_cn}市 (最优: {best['模型']}){note}")
             print(f"    {best['交易']}笔  胜率{best['胜率%']:.0f}%  均收益{best['均收益%']:+.2f}%  "
                   f"盈亏比{best['盈亏比']:.1f}  Sharpe{best['Sharpe']:.2f}  退出:{best['退出方式']}")
 
@@ -339,10 +344,9 @@ def cmd_exit(args):
 
         print()
 
-    print("  ★ 推荐: 按行情阶段使用不同退出模型")
-    print("    下跌市 → 快速止损 (Trail/ATR)")
-    print("    横盘市 → 网格思维 (MA cascade)")
-    print("    上涨市 → 让利润跑 (Trail/MA half)")
+    print("  ★ 推荐: 底部信号的退出策略重点看下跌市和横盘市")
+    print("    上涨市中底部信号天然稀少(无需抄底), 退出策略参考意义有限")
+    print(f"    当前API仅返回~500条日线(约2年), 更长历史需换数据源")
     print()
 
 
