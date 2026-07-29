@@ -324,25 +324,18 @@ def cmd_regime(args):
     for symbol in symbols:
         r = mr.predict_all(symbol)
         name = cfg.symbol_names.get(symbol, symbol)
-        trend = r['trend']
-        conf = r['trend_confidence']
-        detail = r['trend_detail']
+        current = r.get('current_trend', r.get('trend', '未知'))
+        forward = r.get('forward_trend', r.get('trend', '未知'))
+        conf = r.get('trend_confidence', 0)
+        detail = r.get('trend_detail', {})
         top = r.get('top_prob')
         action = r.get('action', '')
 
-        if trend == '下跌':
-            action = '下跌趋势 → 关注底部信号(python main.py scan)'
-        elif trend == '上涨' and top is not None and top >= 70:
-            action = f'上涨中, 顶部信号{top:.0f}% → 考虑减仓'
-        elif trend == '上涨':
-            action = '上涨趋势, 未见顶 → 持有'
-        else:
-            action = '横盘震荡 → 轻仓波段或等待方向'
-
         print(f"\n  {name} ({symbol})")
         print(f"  {'─'*50}")
-        print(f"  当前趋势: {trend} ({conf:.0f}%)")
-        print(f"    下跌: {detail['下跌']:.0f}%  横盘: {detail['横盘']:.0f}%  上涨: {detail['上涨']:.0f}%")
+        print(f"  当前趋势: {current}    未来20日预测: {forward} ({conf:.0f}%)")
+        if detail:
+            print(f"    预测细节: 下跌{detail.get('下跌',0):.0f}%  横盘{detail.get('横盘',0):.0f}%  上涨{detail.get('上涨',0):.0f}%")
         print(f"  顶部概率: {top:.0f}%" if top is not None else "  顶部概率: 未训练")
         print(f"  建议: {action}")
         print(f"  (底部概率请运行: python main.py scan --symbol {symbol})")

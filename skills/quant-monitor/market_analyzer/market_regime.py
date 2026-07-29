@@ -122,9 +122,13 @@ class MarketRegime:
 
         # Bottom model uses separate feature set — run 'python main.py scan' separately
 
+        # Current trend (descriptive, rule-based — what IS happening now)
+        current_trend = self._current_trend(close)
+
         result = {
             'symbol': symbol,
-            'trend': trend_label,
+            'current_trend': current_trend,
+            'forward_trend': trend_label,
             'trend_confidence': round(trend_conf, 1),
             'trend_detail': {
                 '下跌': round(float(trend_proba[0]) * 100, 1),
@@ -134,15 +138,16 @@ class MarketRegime:
             'top_prob': round(top_prob, 1) if top_prob is not None else None,
         }
 
-        if trend_label == '下跌':
-            result['action'] = '下跌趋势 -> 关注底部信号(python main.py scan)'
-        elif trend_label == '上涨':
-            if top_prob and top_prob >= 70:
-                result['action'] = f'上涨中, 顶部信号{top_prob:.0f}% -> 考虑减仓'
+        # Action based on CURRENT trend + top/bottom signals
+        if current_trend == '下跌':
+            result['action'] = '当前下跌 → 关注底部信号(python main.py scan)'
+        elif current_trend == '上涨':
+            if top_prob and top_prob >= 60:
+                result['action'] = f'当前上涨, 顶部风险{top_prob:.0f}% → 注意减仓'
             else:
-                result['action'] = '上涨趋势, 未见顶 -> 持有'
+                result['action'] = '当前上涨, 未见顶 → 持有'
         else:
-            result['action'] = '横盘震荡 -> 轻仓波段或等待方向'
+            result['action'] = '当前横盘 → 波段操作或等待方向'
 
         return result
 
@@ -222,6 +227,49 @@ class MarketRegime:
                         c == 'lower_shadow']
         df = df.dropna(subset=feature_cols)
         return df[feature_cols], df['close']
+
+    # ═══ Current Trend (descriptive — what IS happening) ═══════════
+
+    @staticmethod
+    def _current_trend(close: pd.Series) -> str:
+        """
+        Classify current market trend based on actual price action.
+        Uses MA alignment + recent price position (descriptive, not predictive).
+        """
+        c = close.values
+        if len(c) < 60:
+            return '数据不足'
+
+        ma5 = pd.Series(c).rolling(5).mean().iloc[-1]
+        ma10 = pd.Series(c).rolling(10).mean().iloc[-1]
+        ma20 = pd.Series(c).rolling(20).mean().iloc[-1]
+        ma60 = pd.Series(c).rolling(60).mean().iloc[-1]
+        current = c[-1]
+
+        # Days below MA5
+        below_ma5 = sum(1 for i in range(len(c)-15, len(c)) if c[i] < pd.Series(c).rolling(5).mean().iloc[i])
+
+        # MA alignment
+        mas_above = sum(1 for m in [ma5, ma10, ma20, ma60] if not np.isnan(m) and current < m)
+
+        # 20-day return
+        ret20 = (c[-1] / c[-20] - 1) * 100 if len(c) >= 20 else 0
+
+        # Classification
+        if mas_above >= 3 and below_ma5 >= 8 and ret20 < -5:
+            return '下跌'  # All MAs overhead, price persistently weak
+        elif mas_above >= 2 and ret20 < -3:
+            return '下跌'
+        elif mas_above == 0 and ret20 > 3:
+            return '上涨'  # Price above all MAs, strong
+        elif mas_above <= 1 and ret20 > 0:
+            return '上涨'
+        elif abs(ret20) < 3 and mas_above <= 1:
+            return '横盘'
+        elif mas_above >= 2:
+            return '下跌'  # Default: most MAs overhead = weakness
+        else:
+            return '横盘'
 
     # ═══ Helpers ═══════════════════════════════════════════════════
 
