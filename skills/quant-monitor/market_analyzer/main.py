@@ -301,6 +301,54 @@ def cmd_report(args):
     cmd_scan(args)
 
 
+def cmd_regime(args):
+    """Unified trend + bottom + top prediction."""
+    from market_regime import MarketRegime
+    symbols = args.symbols or cfg.symbols
+    mr = MarketRegime()
+
+    # Ensure trend + top models are trained
+    for symbol in symbols:
+        for lt in ['trend', 'top']:
+            try:
+                mr._load(symbol, lt)
+            except FileNotFoundError:
+                print(f"  Training regime models for {symbol}...")
+                mr.train_all(symbol)
+                break
+
+    # Note: bottom prob requires separate 'scan' command
+    # Regime command shows trend + top only
+
+    # Predict
+    for symbol in symbols:
+        r = mr.predict_all(symbol)
+        name = cfg.symbol_names.get(symbol, symbol)
+        trend = r['trend']
+        conf = r['trend_confidence']
+        detail = r['trend_detail']
+        top = r.get('top_prob')
+        action = r.get('action', '')
+
+        if trend == '下跌':
+            action = '下跌趋势 → 关注底部信号(python main.py scan)'
+        elif trend == '上涨' and top is not None and top >= 70:
+            action = f'上涨中, 顶部信号{top:.0f}% → 考虑减仓'
+        elif trend == '上涨':
+            action = '上涨趋势, 未见顶 → 持有'
+        else:
+            action = '横盘震荡 → 轻仓波段或等待方向'
+
+        print(f"\n  {name} ({symbol})")
+        print(f"  {'─'*50}")
+        print(f"  当前趋势: {trend} ({conf:.0f}%)")
+        print(f"    下跌: {detail['下跌']:.0f}%  横盘: {detail['横盘']:.0f}%  上涨: {detail['上涨']:.0f}%")
+        print(f"  顶部概率: {top:.0f}%" if top is not None else "  顶部概率: 未训练")
+        print(f"  建议: {action}")
+        print(f"  (底部概率请运行: python main.py scan --symbol {symbol})")
+    print()
+
+
 def cmd_exit(args):
     """Compare 4 exit strategies across 3 market regimes."""
     from exit_backtest import ExitBacktest
@@ -327,7 +375,7 @@ def cmd_exit(args):
             regime_cn = {'down': '下跌', 'sideways': '横盘', 'up': '上涨'}.get(regime, regime)
             note = ''
             if best['交易'] < 5:
-                note = f' ⚠ 样本不足({best[\"交易\"]}笔), 置信度低'
+                note = ' [!] LOW_SAMPLES'
             elif regime == 'up':
                 note = ' (底部信号在上涨市天然稀少)'
             print(f"\n  ▸ {regime_cn}市 (最优: {best['模型']}){note}")
@@ -510,6 +558,13 @@ def main():
                    help="股票代码 (默认: 全部)")
     x.add_argument("--verbose", "-v", action="store_true", help="详细日志")
 
+    g = sub.add_parser("regime", help="Trend + bottom + top unified prediction",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例: python main.py regime --symbol 159915")
+    g.add_argument("--symbol", "--symbols", nargs="*", default=None, dest="symbols",
+                   help="股票代码 (默认: 全部)")
+    g.add_argument("--verbose", "-v", action="store_true", help="详细日志")
+
     args = p.parse_args()
 
     if not args.command:
@@ -524,7 +579,8 @@ def main():
         cfg.end_date = args.end
 
     {"train": cmd_train, "scan": cmd_scan, "report": cmd_report,
-     "backtest": cmd_backtest, "entry": cmd_entry, "exit": cmd_exit}[args.command](args)
+     "backtest": cmd_backtest, "entry": cmd_entry, "exit": cmd_exit,
+     "regime": cmd_regime}[args.command](args)
 
 
 if __name__ == "__main__":
